@@ -116,9 +116,12 @@ enum AgentIcons {
     /// xAI Grok , mono angular slash mark, 24×24 viewBox.
     private static let grokSVG = """
     <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-      <path fill="#000000" d="M3 21 15.4 3h3.4L6.4 21H3Z"/>
-      <path fill="#000000" d="M13.9 21l3.3-4.8 1.7 2.4L21.5 21h-7.6Z"/>
-      <path fill="#000000" d="M18.1 13.1 21.5 8l-1.7-2.5-3.4 5.1 1.7 2.5Z"/>
+      <circle cx="12" cy="12" r="12" fill="#F5F5F5"/>
+      <g transform="translate(2.4 2.4) scale(0.8)">
+        <path fill="#000000" d="M3 21 15.4 3h3.4L6.4 21H3Z"/>
+        <path fill="#000000" d="M13.9 21l3.3-4.8 1.7 2.4L21.5 21h-7.6Z"/>
+        <path fill="#000000" d="M18.1 13.1 21.5 8l-1.7-2.5-3.4 5.1 1.7 2.5Z"/>
+      </g>
     </svg>
     """
 
@@ -269,8 +272,8 @@ extension AgentKind: Identifiable {
 // MARK: - Curated SF Symbols for the icon picker
 
 extension AgentIcons {
-    /// All AgentKind cases that have embedded SVG brand logos.
-    static let brandKinds: [AgentKind] = [.claude, .cursor, .codex, .gemini, .windsurf, .opencode, .antigravity, .copilot, .kiroCLI, .droid, .pi, .jcode]
+    /// Every AgentKind case that ships a brand logo (SVG or PNG).
+    static let brandKinds: [AgentKind] = [.claude, .cursor, .codex, .gemini, .windsurf, .opencode, .antigravity, .copilot, .kiroCLI, .droid, .pi, .grok, .jcode]
 
     /// 28 curated SF Symbol names shown in the icon picker.
     static let curatedSymbols: [String] = [
