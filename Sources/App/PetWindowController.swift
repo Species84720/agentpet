@@ -98,11 +98,15 @@ final class PetWindowController: ObservableObject {
                 guard let self,
                       let managed = self.windows.values.first(where: { event.window === $0.panel }),
                       let content = managed.panel.contentView else { return false }
-                // Anchor to the whole content rect so the popover sits entirely
-                // outside the window (above it) and never overlaps the pet,
-                // shifted by `petOffset` so its arrow stays over the pet when
-                // the pet is offset inside a window pushed back on screen.
-                let anchor = content.bounds.offsetBy(dx: managed.model.petOffset, dy: 0)
+                // Anchor to a full-height sliver at the pet's x: full height so
+                // the popover sits entirely above the window and never overlaps
+                // the pet, and centred on the pet (window centre + petOffset)
+                // so the arrow points at it when the pet is offset inside a
+                // window pushed back on screen. A shifted full-width rect would
+                // be clipped to the view, moving the arrow only half as far.
+                let b = content.bounds
+                let anchor = NSRect(x: b.midX + managed.model.petOffset - 1, y: b.minY,
+                                    width: 2, height: b.height)
                 self.showStatsPopover(relativeTo: anchor, of: content, petID: managed.model.petID)
                 return true
             }
