@@ -55,17 +55,27 @@ public enum JcodeHookConfigError: LocalizedError, Equatable {
 /// simplify: a key already set to a foreign command is refused, not merged.
 /// jcode accepts an array value (`key = ["a", "b"]`), so merging is the upgrade
 /// path if anyone needs to share a hook with AgentPet.
+/// Not detected: hooks set outside a `[hooks]` table (root-level
+/// `hooks = { ... }` or dotted `hooks.turn_end = ...`).
 public enum JcodeHookConfig {
     /// Line indices of the `[hooks]` table body: after its header, up to the
     /// next table header. `nil` when the table is absent.
     static func hooksBody(_ lines: [String]) -> (header: Int, end: Int)? {
-        guard let header = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == "[hooks]" })
-        else { return nil }
+        guard let header = lines.firstIndex(where: isHooksHeader) else { return nil }
         var end = header + 1
         while end < lines.count, !lines[end].trimmingCharacters(in: .whitespaces).hasPrefix("[") {
             end += 1
         }
         return (header, end)
+    }
+
+    /// True for any spelling of the `[hooks]` header TOML allows: a trailing
+    /// comment, CRLF line endings, or spaces inside the brackets. Missing one
+    /// would append a second `[hooks]` table, which is invalid TOML, and jcode
+    /// then silently falls back to its default config.
+    static func isHooksHeader(_ line: String) -> Bool {
+        let code = line.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first ?? ""
+        return code.filter { !$0.isWhitespace } == "[hooks]"
     }
 
     /// Index of the uncommented `key = ...` line in the hooks body, if any.

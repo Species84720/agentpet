@@ -108,6 +108,22 @@ final class JcodeHookTests: XCTestCase {
         XCTAssertTrue(try JcodeHookConfig.install(in: "", command: cmd, events: ["turn_end"]).hasPrefix("[hooks]\n"))
     }
 
+    /// A second `[hooks]` table is invalid TOML and makes jcode drop the whole
+    /// config, so every header spelling must be found, not appended again.
+    func testHeaderVariantsAreFoundNotDuplicated() throws {
+        for header in ["[hooks] # observers", "[ hooks ]", "\t[hooks]\t", "[hooks]\r"] {
+            let src = "\(header)\npre_tool = \"x\"\n"
+            let out = try JcodeHookConfig.install(in: src, command: cmd, events: ["turn_end"])
+            let headers = out.components(separatedBy: "\n").filter(JcodeHookConfig.isHooksHeader)
+            XCTAssertEqual(headers.count, 1, "header \(header.debugDescription)")
+            XCTAssertTrue(JcodeHookConfig.isInstalled(in: out, events: ["turn_end"]))
+            XCTAssertEqual(JcodeHookConfig.uninstall(in: out, events: ["turn_end"]), src)
+        }
+        XCTAssertFalse(JcodeHookConfig.isHooksHeader("[[hooks]]"))
+        XCTAssertFalse(JcodeHookConfig.isHooksHeader("# [hooks]"))
+        XCTAssertFalse(JcodeHookConfig.isHooksHeader("[hooks.extra]"))
+    }
+
     func testForeignHookIsNeverOverwritten() {
         let foreign = sample.replacingOccurrences(of: "pre_tool_timeout_ms = 5000",
                                                   with: "pre_tool_timeout_ms = 5000\nturn_end = \"~/bin/notify\"")
