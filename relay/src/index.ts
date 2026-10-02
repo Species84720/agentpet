@@ -74,12 +74,10 @@ export default {
       // Tokens travel in Sec-WebSocket-Protocol, not URLs. Validate it against
       // the already authenticated Authorization header before passing to the DO.
       if (auth.role !== "companion") return json({ error: "companion token required" }, 403);
-      // The Durable Object must receive Upgrade as well. Omitting it makes
-      // Workers reject the DO's WebSocket response with its misleading
-      // "request did not contain Upgrade" error.
-      return room(env, auth.userId).fetch("https://room/live", {
-        headers: { "x-device-role": auth.role, "Upgrade": "websocket" },
-      });
+      // Forward the original upgraded request verbatim. Cloudflare strips a
+      // synthetic Upgrade header from a new fetch, but preserves it when the
+      // actual client request is handed to the Durable Object.
+      return room(env, auth.userId).fetch(request);
     }
     if (url.pathname === "/v1/events" && request.method === "POST") {
       if (auth.role !== "agent") return json({ error: "agent token required" }, 403);
@@ -144,7 +142,7 @@ export class PetRoom implements DurableObject {
   async fetch(request: Request): Promise<Response> {
     await this.ready;
     const path = new URL(request.url).pathname;
-    if (path === "/live") {
+    if (path === "/live" || path === "/v1/live") {
       const pair = new WebSocketPair();
       const [client, server] = Object.values(pair);
       this.ctx.acceptWebSocket(server);

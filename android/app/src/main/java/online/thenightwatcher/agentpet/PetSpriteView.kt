@@ -95,7 +95,7 @@ class PetSpriteView(context: Context) : View(context) {
     }
 }
 
-data class RemotePet(val name: String, val spritesheetUrl: String)
+data class RemotePet(val name: String, val slug: String, val spritesheetUrl: String)
 
 object PetCatalog {
     const val MANIFEST = "https://pets.thenightwatcher.online/manifest.json"
@@ -106,7 +106,8 @@ object PetCatalog {
                 connection.inputStream.bufferedReader().use { reader ->
                     val rows = JSONObject(reader.readText()).optJSONArray("pets")
                     (0 until (rows?.length() ?: 0)).mapNotNull { i -> rows?.optJSONObject(i)?.let {
-                        val sheet = it.optString("spritesheetUrl"); if (sheet.isBlank()) null else RemotePet(it.optString("displayName", it.optString("slug")), sheet)
+                        val sheet = it.optString("spritesheetUrl"); val slug = it.optString("slug")
+                        if (sheet.isBlank()) null else RemotePet(it.optString("displayName", slug), slug, sheet)
                     } }
                 }
             }.getOrDefault(emptyList())

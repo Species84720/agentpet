@@ -29,21 +29,33 @@ class MainActivity : AppCompatActivity() {
         token.doAfterTextChanged { prefs.edit().putString("token", it?.toString()?.trim() ?: "").apply() }
         root.addView(endpoint); root.addView(token)
         val petLabel = TextView(this).apply { text = "Pet: loading shared library…" }
+        val petSearch = EditText(this).apply { hint = "Search pets by name" }
         val pets = Spinner(this)
-        root.addView(petLabel); root.addView(pets)
-        PetCatalog.load { library ->
-            if (library.isEmpty()) { petLabel.text = "Pet library unavailable — the companion will retry."; return@load }
-            val labels = library.map { it.name }
-            pets.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, labels)
+        root.addView(petLabel); root.addView(petSearch); root.addView(pets)
+        var allPets: List<RemotePet> = emptyList()
+        var displayed: List<RemotePet> = emptyList()
+        var applyingPetList = false
+        fun renderPets(query: String) {
+            val normalized = query.trim().lowercase()
+            displayed = allPets.filter { normalized.isBlank() || it.name.lowercase().contains(normalized) || it.slug.lowercase().contains(normalized) }
+            applyingPetList = true
+            pets.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, displayed.map { it.name })
             val selected = prefs.getString("pet_sheet", "")
-            pets.setSelection(library.indexOfFirst { it.spritesheetUrl == selected }.coerceAtLeast(0))
-            pets.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
-                override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
-                override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
-                    prefs.edit().putString("pet_sheet", library[position].spritesheetUrl).apply()
-                }
+            pets.setSelection(displayed.indexOfFirst { it.spritesheetUrl == selected }.coerceAtLeast(0))
+            applyingPetList = false
+            petLabel.text = if (displayed.isEmpty()) "No pets match \"${petSearch.text}\"" else "Choose your animated pet (${displayed.size} shown of ${allPets.size})"
+        }
+        petSearch.doAfterTextChanged { renderPets(it?.toString() ?: "") }
+        pets.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
+                if (!applyingPetList && position in displayed.indices) prefs.edit().putString("pet_sheet", displayed[position].spritesheetUrl).apply()
             }
-            petLabel.text = "Choose your animated pet (${library.size} available)"
+        }
+        PetCatalog.load { loadedPets ->
+            if (loadedPets.isEmpty()) { petLabel.text = "Pet library unavailable — the companion will retry."; return@load }
+            allPets = loadedPets
+            renderPets(petSearch.text.toString())
         }
         root.addView(Button(this).apply {
             text = "Allow overlay and start pet"
