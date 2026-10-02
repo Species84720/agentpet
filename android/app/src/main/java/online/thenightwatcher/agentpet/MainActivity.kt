@@ -146,7 +146,54 @@ class MainActivity : AppCompatActivity() {
                     }.show()
             }
         })
-        setContentView(ScrollView(this).apply { addView(root) })
+        // Reuse the already-wired controls above, but present them as real pages
+        // instead of one endless settings form.
+        val original = (0 until root.childCount).map(root::getChildAt)
+        root.removeAllViews()
+        val petPage = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val bubblePage = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val carePage = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val historyPage = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val connectionPage = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        var target = petPage
+        original.drop(3).forEach { view ->
+            val label = (view as? TextView)?.text?.toString().orEmpty()
+            when {
+                view === endpoint || view === token -> connectionPage.addView(view)
+                view === petLabel || view === petSearch || view === pets -> petPage.addView(view)
+                label == "Pet & animation" -> { target = petPage; target.addView(view) }
+                label == "Bubble & agents" -> { target = bubblePage; target.addView(view) }
+                label == "Android pet care" -> { target = carePage; target.addView(view) }
+                label == "Connection & history" -> { target = connectionPage; target.addView(view) }
+                view is Button && label.contains("history", ignoreCase = true) -> historyPage.addView(view)
+                else -> target.addView(view)
+            }
+        }
+        fun prepare(page: LinearLayout) {
+            page.setPadding(40, 24, 40, 64)
+            for (i in 0 until page.childCount) when (val child = page.getChildAt(i)) {
+                is EditText -> { child.setTextColor(Color.WHITE); child.setHintTextColor(Color.GRAY) }
+                is TextView -> if (child !is Button && child !is CheckBox) child.setTextColor(Color.WHITE)
+            }
+        }
+        listOf(petPage, bubblePage, carePage, historyPage, connectionPage).forEach(::prepare)
+        val shell = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.rgb(17, 22, 32)) }
+        original.take(3).forEach(shell::addView)
+        val tabBar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(8, 4, 8, 4) }
+        val tabScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(tabBar) }
+        val pageHost = FrameLayout(this)
+        shell.addView(tabScroll)
+        shell.addView(pageHost, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        val pages = listOf("Pet" to petPage, "Bubble" to bubblePage, "Care" to carePage, "History" to historyPage, "Connection" to connectionPage)
+        val tabButtons = mutableListOf<Button>()
+        fun select(index: Int) {
+            pageHost.removeAllViews()
+            pageHost.addView(ScrollView(this).apply { addView(pages[index].second) })
+            tabButtons.forEachIndexed { i, button -> button.setTextColor(if (i == index) Color.rgb(17, 22, 32) else Color.WHITE); button.setBackgroundColor(if (i == index) Color.rgb(143, 221, 104) else Color.rgb(38, 48, 66)) }
+        }
+        pages.forEachIndexed { index, pair -> tabBar.addView(Button(this).apply { text = pair.first; isAllCaps = false; setOnClickListener { select(index) }; tabButtons += this }) }
+        setContentView(shell)
+        select(0)
         showOverlayStatus()
     }
     override fun onStart() {
