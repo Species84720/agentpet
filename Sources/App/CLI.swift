@@ -38,6 +38,9 @@ enum HookCLI {
             exit(0)
         }
         EventSender.send(event, socketPath: AgentPetPaths.socketPath, queueDir: AgentPetPaths.queueDir)
+        // The Cloudflare mirror is opt-in and bounded; it never makes a CLI
+        // hook fail or delays the agent beyond its short delivery timeout.
+        CloudRelayPublisher.publish(event)
         exit(0)
     }
 }

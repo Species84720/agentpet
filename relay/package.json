@@ -1,0 +1,15 @@
+{
+  "name": "agentpet-relay",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260929.0",
+    "typescript": "^5.9.3",
+    "wrangler": "^4.98.0"
+  }
+}
