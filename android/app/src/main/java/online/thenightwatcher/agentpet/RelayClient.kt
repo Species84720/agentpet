@@ -36,4 +36,16 @@ class RelayClient(
             override fun onResponse(call: Call, response: Response) { response.use { onComplete(it.isSuccessful) } }
         })
     }
+    fun fetchHistory(onComplete: (List<JSONObject>?) -> Unit) {
+        val request = Request.Builder().url(endpoint.removeSuffix("/") + "/v1/events?limit=50")
+            .header("Authorization", "Bearer $token").build()
+        client.newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: java.io.IOException) = onComplete(null)
+            override fun onResponse(call: Call, response: Response) = response.use {
+                val events = runCatching { JSONObject(it.body?.string() ?: "{}").optJSONArray("events") }
+                    .getOrNull()?.let { array -> (0 until array.length()).mapNotNull(array::optJSONObject) }
+                onComplete(events)
+            }
+        })
+    }
 }

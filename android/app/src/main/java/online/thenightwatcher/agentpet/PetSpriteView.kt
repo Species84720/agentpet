@@ -21,6 +21,7 @@ import java.util.concurrent.Executors
 class PetSpriteView(context: Context) : View(context) {
     private var clips: List<List<Bitmap>> = emptyList()
     private var mood = "idle"
+    private var clipBindings: Map<String, Int> = emptyMap()
     private var frame = 0
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { isFilterBitmap = false }
     private val main = Handler(Looper.getMainLooper())
@@ -37,6 +38,7 @@ class PetSpriteView(context: Context) : View(context) {
     fun setMood(value: String) {
         if (mood != value) { mood = value; frame = 0; invalidate() }
     }
+    fun setClipBindings(value: Map<String, Int>) { clipBindings = value; frame = 0; invalidate() }
 
     fun load(url: String, onResult: (Boolean) -> Unit) {
         Executors.newSingleThreadExecutor().execute {
@@ -52,9 +54,10 @@ class PetSpriteView(context: Context) : View(context) {
 
     private fun currentClip(): List<Bitmap> {
         if (clips.isEmpty()) return emptyList()
-        val row = when (mood) {
+        val defaultRow = when (mood) {
             "working" -> 1; "waiting" -> 2; "done" -> 3; "celebrate" -> 4; "sleepy" -> 5; else -> 0
         }
+        val row = clipBindings[mood] ?: defaultRow
         return clips[row.coerceAtMost(clips.lastIndex)]
     }
 

@@ -55,15 +55,19 @@ class PetOverlayService : Service() {
     private fun showPet() {
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         val saved = getSharedPreferences("overlay", MODE_PRIVATE); x = saved.getInt("x", x); y = saved.getInt("y", y)
-        val params = WindowManager.LayoutParams(172, 206, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT).apply { gravity = Gravity.TOP or Gravity.START; this.x = x; this.y = y }
+        val spriteSize = getSharedPreferences("relay", MODE_PRIVATE).getInt("pet_size", 156).coerceIn(80, 260)
+        val params = WindowManager.LayoutParams(spriteSize + 16, spriteSize + 58, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT).apply { gravity = Gravity.TOP or Gravity.START; this.x = x; this.y = y }
         overlay = FrameLayout(this).apply {
             bubble = TextView(this@PetOverlayService).apply {
                 text = "Ready to help"; textSize = 13f; gravity = Gravity.CENTER; setTextColor(Color.WHITE); setPadding(14, 8, 14, 8)
                 background = GradientDrawable().apply { setColor(Color.rgb(43, 55, 75)); cornerRadius = 24f }
             }
             sprite = PetSpriteView(this@PetOverlayService)
+            sprite?.setClipBindings(listOf("idle", "working", "waiting", "done", "celebrate", "sleepy").associateWith { mood ->
+                getSharedPreferences("relay", MODE_PRIVATE).getInt("clip_$mood", -1)
+            }.filterValues { it >= 0 })
             addView(bubble, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, 54).apply { setMargins(4, 2, 4, 0) })
-            addView(sprite, FrameLayout.LayoutParams(156, 148).apply { gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL })
+            addView(sprite, FrameLayout.LayoutParams(spriteSize, spriteSize).apply { gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL })
             var downX = 0f; var downY = 0f; var baseX = 0; var baseY = 0
             setOnTouchListener { _, event -> when (event.action) {
                 MotionEvent.ACTION_DOWN -> { downX = event.rawX; downY = event.rawY; baseX = params.x; baseY = params.y; true }
@@ -104,8 +108,10 @@ class PetOverlayService : Service() {
         val name = event.optString("eventName", "idle")
         val mood = when (name.lowercase()) { "stop", "done", "sessionend" -> "done"; "pretooluse", "notification", "waiting" -> "waiting"; else -> "working" }
         sprite?.setMood(mood)
-        bubble?.text = event.optString("message").ifBlank {
+        val message = event.optString("message").ifBlank {
             when (mood) { "waiting" -> "I need your input"; "done" -> "All done!"; else -> "Working on it…" }
         }
+        val multiAgent = getSharedPreferences("relay", MODE_PRIVATE).getBoolean("multi_agent_bubble", false)
+        bubble?.text = if (multiAgent) "${event.optString("agentKind", "Agent")} · $mood\n$message" else message
     }
 }

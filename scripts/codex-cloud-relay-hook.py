@@ -37,9 +37,10 @@ def main() -> None:
         model = payload.get("model")
         if isinstance(model, dict):
             model = model.get("display_name") or model.get("id")
+        agent = "copilot" if "--agent" in sys.argv and sys.argv.index("--agent") + 1 < len(sys.argv) and sys.argv[sys.argv.index("--agent") + 1] == "copilot" else "codex"
         body = {
             "sessionId": session_id,
-            "agentKind": "codex",
+            "agentKind": agent,
             "eventName": event_name,
             "project": payload.get("cwd"),
             "message": payload.get("message") or payload.get("tool_name"),

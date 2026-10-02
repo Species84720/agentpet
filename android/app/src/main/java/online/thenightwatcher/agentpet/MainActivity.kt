@@ -66,6 +66,24 @@ class MainActivity : AppCompatActivity() {
             allPets = loadedPets
             renderPets(petSearch.text.toString())
         }
+        root.addView(TextView(this).apply { text = "Overlay controls"; textSize = 18f; setPadding(0, 24, 0, 4) })
+        val sizeLabel = TextView(this)
+        val size = SeekBar(this).apply { max = 180; progress = prefs.getInt("pet_size", 156).coerceIn(80, 260) - 80 }
+        fun updateSizeLabel() { sizeLabel.text = "Pet size: ${size.progress + 80}px (takes effect when restarted)" }
+        updateSizeLabel()
+        size.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(bar: SeekBar?, value: Int, user: Boolean) { prefs.edit().putInt("pet_size", value + 80).apply(); updateSizeLabel() }
+            override fun onStartTrackingTouch(bar: SeekBar?) = Unit; override fun onStopTrackingTouch(bar: SeekBar?) = Unit
+        })
+        root.addView(sizeLabel); root.addView(size)
+        val moods = listOf("idle", "working", "waiting", "done", "celebrate", "sleepy")
+        val moodPicker = Spinner(this).apply { adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, moods) }
+        val clipPicker = Spinner(this).apply { adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, (0..8).map { "Clip $it" }) }
+        fun syncClip() { clipPicker.setSelection(prefs.getInt("clip_${moods[moodPicker.selectedItemPosition]}", moods.indexOf(moods[moodPicker.selectedItemPosition])).coerceIn(0, 8)) }
+        moodPicker.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener { override fun onNothingSelected(p: android.widget.AdapterView<*>?) = Unit; override fun onItemSelected(p: android.widget.AdapterView<*>?, v: android.view.View?, pos: Int, id: Long) = syncClip() }
+        clipPicker.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener { override fun onNothingSelected(p: android.widget.AdapterView<*>?) = Unit; override fun onItemSelected(p: android.widget.AdapterView<*>?, v: android.view.View?, pos: Int, id: Long) { prefs.edit().putInt("clip_${moods[moodPicker.selectedItemPosition]}", pos).apply() } }
+        root.addView(TextView(this).apply { text = "Animation clip for mood (clamped if this pet has fewer clips)" }); root.addView(moodPicker); root.addView(clipPicker)
+        root.addView(CheckBox(this).apply { text = "Show agent and state in bubble"; isChecked = prefs.getBoolean("multi_agent_bubble", false); setOnCheckedChangeListener { _, checked -> prefs.edit().putBoolean("multi_agent_bubble", checked).apply() } })
         root.addView(Button(this).apply {
             text = "Allow overlay and start pet"
             setOnClickListener {
@@ -77,6 +95,12 @@ class MainActivity : AppCompatActivity() {
             }
         })
         root.addView(Button(this).apply { text = "Stop floating pet"; setOnClickListener { stopService(Intent(this@MainActivity, PetOverlayService::class.java)) } })
+        root.addView(Button(this).apply { text = "Show cloud activity history"; setOnClickListener {
+            RelayClient(endpoint.text.toString().trim().removeSuffix("/"), token.text.toString().trim(), onMessage = {}).fetchHistory { events -> runOnUiThread {
+                val content = events?.joinToString("\n\n") { "${it.optString("agentKind", "agent")} · ${it.optString("eventName")}\n${it.optString("message", "")}" } ?: "Could not load history. Check pairing and connection."
+                AlertDialog.Builder(this@MainActivity).setTitle("Recent cloud activity").setMessage(content.ifBlank { "No events yet." }).setPositiveButton("Close", null).show()
+            } }
+        } })
         root.addView(Button(this).apply {
             text = "Clear cloud activity history"
             setOnClickListener {
@@ -92,7 +116,7 @@ class MainActivity : AppCompatActivity() {
                     }.show()
             }
         })
-        setContentView(root)
+        setContentView(ScrollView(this).apply { addView(root) })
         showOverlayStatus()
     }
     override fun onStart() {
