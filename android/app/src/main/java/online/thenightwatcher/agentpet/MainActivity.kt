@@ -4,6 +4,7 @@ import android.content.Intent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.IntentFilter
+import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
@@ -25,9 +26,14 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val prefs = getSharedPreferences("relay", MODE_PRIVATE)
-        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(48, 72, 48, 48) }
-        root.addView(TextView(this).apply { text = "AgentPet companion"; textSize = 24f })
-        root.addView(TextView(this).apply { text = "Pair this Android pet with your Cloudflare relay." })
+        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(48, 56, 48, 56); setBackgroundColor(Color.rgb(17, 22, 32)) }
+        fun heading(value: String) = TextView(this).apply { text = value; textSize = 19f; setTextColor(Color.rgb(143, 221, 104)); setPadding(0, 32, 0, 8) }
+        fun choice(label: String, key: String, values: List<String>, default: String) {
+            root.addView(TextView(this).apply { text = label; setTextColor(Color.WHITE) })
+            root.addView(Spinner(this).apply { adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, values.map { it.replace('_', ' ') }); setSelection(values.indexOf(prefs.getString(key, default)).coerceAtLeast(0)); onItemSelectedListener = object : AdapterView.OnItemSelectedListener { override fun onNothingSelected(p: AdapterView<*>?) = Unit; override fun onItemSelected(p: AdapterView<*>?, v: android.view.View?, pos: Int, id: Long) { prefs.edit().putString(key, values[pos]).apply() } } })
+        }
+        root.addView(TextView(this).apply { text = "AgentPet"; textSize = 28f; setTextColor(Color.WHITE) })
+        root.addView(TextView(this).apply { text = "Android Tamagotchi control center"; setTextColor(Color.LTGRAY) })
         overlayStatus = TextView(this).apply { textSize = 15f; setPadding(16, 16, 16, 16) }
         root.addView(overlayStatus)
         val endpoint = EditText(this).apply { hint = "https://relay.example.com"; setText(prefs.getString("endpoint", "")) }
@@ -66,7 +72,7 @@ class MainActivity : AppCompatActivity() {
             allPets = loadedPets
             renderPets(petSearch.text.toString())
         }
-        root.addView(TextView(this).apply { text = "Overlay controls"; textSize = 18f; setPadding(0, 24, 0, 4) })
+        root.addView(heading("Pet & animation"))
         val sizeLabel = TextView(this)
         val size = SeekBar(this).apply { max = 180; progress = prefs.getInt("pet_size", 156).coerceIn(80, 260) - 80 }
         fun updateSizeLabel() { sizeLabel.text = "Pet size: ${size.progress + 80}px (takes effect when restarted)" }
@@ -83,7 +89,31 @@ class MainActivity : AppCompatActivity() {
         moodPicker.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener { override fun onNothingSelected(p: android.widget.AdapterView<*>?) = Unit; override fun onItemSelected(p: android.widget.AdapterView<*>?, v: android.view.View?, pos: Int, id: Long) = syncClip() }
         clipPicker.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener { override fun onNothingSelected(p: android.widget.AdapterView<*>?) = Unit; override fun onItemSelected(p: android.widget.AdapterView<*>?, v: android.view.View?, pos: Int, id: Long) { prefs.edit().putInt("clip_${moods[moodPicker.selectedItemPosition]}", pos).apply() } }
         root.addView(TextView(this).apply { text = "Animation clip for mood (clamped if this pet has fewer clips)" }); root.addView(moodPicker); root.addView(clipPicker)
-        root.addView(CheckBox(this).apply { text = "Show agent and state in bubble"; isChecked = prefs.getBoolean("multi_agent_bubble", false); setOnCheckedChangeListener { _, checked -> prefs.edit().putBoolean("multi_agent_bubble", checked).apply() } })
+        root.addView(CheckBox(this).apply { text = "Animate pet"; isChecked = prefs.getBoolean("animations_enabled", true); setTextColor(Color.WHITE); setOnCheckedChangeListener { _, checked -> prefs.edit().putBoolean("animations_enabled", checked).apply() } })
+        val fpsLabel = TextView(this); val fps = SeekBar(this).apply { max = 11; progress = prefs.getInt("animation_fps", 5).coerceIn(1, 12) - 1 }; fun paintFps() { fpsLabel.text = "Animation speed: ${fps.progress + 1} fps" }; paintFps(); fps.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener { override fun onProgressChanged(s: SeekBar?, p: Int, u: Boolean) { prefs.edit().putInt("animation_fps", p + 1).apply(); paintFps() }; override fun onStartTrackingTouch(s: SeekBar?) = Unit; override fun onStopTrackingTouch(s: SeekBar?) = Unit }); root.addView(fpsLabel); root.addView(fps)
+
+        root.addView(heading("Bubble & agents"))
+        root.addView(CheckBox(this).apply { text = "Multi-agent bubble"; isChecked = prefs.getBoolean("multi_agent_bubble", true); setTextColor(Color.WHITE); setOnCheckedChangeListener { _, checked -> prefs.edit().putBoolean("multi_agent_bubble", checked).apply() } })
+        root.addView(CheckBox(this).apply { text = "Reactive activity messages"; isChecked = prefs.getBoolean("reactive_bubbles", true); setTextColor(Color.WHITE); setOnCheckedChangeListener { _, checked -> prefs.edit().putBoolean("reactive_bubbles", checked).apply() } })
+        choice("Display mode", "bubble_mode", listOf("list", "carousel", "compact"), "carousel")
+        choice("Session grouping", "bubble_grouping", listOf("byKind", "allSessions"), "byKind")
+        choice("Minimum state", "bubble_min_state", listOf("all", "done_above", "working_waiting", "working"), "all")
+        choice("Theme", "bubble_theme", listOf("system", "dark", "light"), "system")
+        choice("Font size", "bubble_font", listOf("small", "medium", "large"), "medium")
+        choice("State indicator", "bubble_dot", listOf("plain", "claude"), "plain")
+        choice("Activity phrases", "activity_theme", listOf("chef", "engineer", "wizard", "explorer", "scientist"), "chef")
+        val opacityLabel = TextView(this); val opacity = SeekBar(this).apply { max = 70; progress = prefs.getInt("bubble_opacity", 92).coerceIn(30, 100) - 30 }; fun paintOpacity() { opacityLabel.text = "Bubble opacity: ${opacity.progress + 30}%" }; paintOpacity(); opacity.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener { override fun onProgressChanged(s: SeekBar?, p: Int, u: Boolean) { prefs.edit().putInt("bubble_opacity", p + 30).apply(); paintOpacity() }; override fun onStartTrackingTouch(s: SeekBar?) = Unit; override fun onStopTrackingTouch(s: SeekBar?) = Unit }); root.addView(opacityLabel); root.addView(opacity)
+        listOf("idle", "working", "waiting", "done", "celebrate").forEach { state -> root.addView(EditText(this).apply { hint = "Custom $state message"; setText(prefs.getString("message_$state", "")); doAfterTextChanged { prefs.edit().putString("message_$state", it.toString()).apply() } }) }
+
+        root.addView(heading("Android pet care"))
+        val care = TextView(this).apply { setTextColor(Color.WHITE); textSize = 16f; setPadding(16, 16, 16, 16); setBackgroundColor(Color.rgb(34, 43, 60)) }
+        fun renderCare() { val s = MobilePetCare.state(this); care.text = "${s.stage} · Lv ${s.displayLevel} · ${s.hunger}\nXP ${s.xp} · ${s.progress}% to next level\nToday ${s.tokensToday} tokens · ${s.mealsToday} sessions\nLifetime ${s.totalTokens} tokens · ${s.totalMeals} sessions · ${s.streakDays}-day streak\n\n${s.achievements.ifEmpty { listOf("No achievements yet") }.joinToString("\n")}" }
+        renderCare(); root.addView(care)
+        root.addView(Button(this).apply { text = "Feed snack (+25K tokens)"; setOnClickListener { MobilePetCare.feed(this@MainActivity); renderCare() } })
+        root.addView(Button(this).apply { text = "Play (+10 XP)"; setOnClickListener { MobilePetCare.play(this@MainActivity); renderCare() } })
+        root.addView(Button(this).apply { text = "Reset Android care"; setOnClickListener { AlertDialog.Builder(this@MainActivity).setTitle("Reset Android care?").setNegativeButton("Cancel", null).setPositiveButton("Reset") { _, _ -> MobilePetCare.reset(this@MainActivity); renderCare() }.show() } })
+
+        root.addView(heading("Connection & history"))
         root.addView(Button(this).apply {
             text = "Allow overlay and start pet"
             setOnClickListener {

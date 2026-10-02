@@ -22,14 +22,16 @@ class PetSpriteView(context: Context) : View(context) {
     private var clips: List<List<Bitmap>> = emptyList()
     private var mood = "idle"
     private var clipBindings: Map<String, Int> = emptyMap()
+    private var animationsEnabled = true
+    private var frameDelayMs = 220L
     private var frame = 0
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { isFilterBitmap = false }
     private val main = Handler(Looper.getMainLooper())
     private val ticker = object : Runnable {
         override fun run() {
             val current = currentClip()
-            if (current.size > 1) { frame = (frame + 1) % current.size; invalidate() }
-            main.postDelayed(this, 220)
+            if (animationsEnabled && current.size > 1) { frame = (frame + 1) % current.size; invalidate() }
+            main.postDelayed(this, frameDelayMs)
         }
     }
 
@@ -39,6 +41,7 @@ class PetSpriteView(context: Context) : View(context) {
         if (mood != value) { mood = value; frame = 0; invalidate() }
     }
     fun setClipBindings(value: Map<String, Int>) { clipBindings = value; frame = 0; invalidate() }
+    fun configureAnimation(enabled: Boolean, fps: Int) { animationsEnabled = enabled; frameDelayMs = (1000L / fps.coerceIn(1, 12)); if (!enabled) frame = 0; invalidate() }
 
     fun load(url: String, onResult: (Boolean) -> Unit) {
         Executors.newSingleThreadExecutor().execute {
