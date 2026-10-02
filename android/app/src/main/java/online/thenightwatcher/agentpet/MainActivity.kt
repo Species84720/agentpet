@@ -8,6 +8,7 @@ import android.view.Gravity
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.app.AlertDialog
+import androidx.core.widget.doAfterTextChanged
 
 /** Small pairing screen. The floating companion itself is owned by the service. */
 class MainActivity : AppCompatActivity() {
@@ -19,6 +20,10 @@ class MainActivity : AppCompatActivity() {
         root.addView(TextView(this).apply { text = "Pair this Android pet with your Cloudflare relay." })
         val endpoint = EditText(this).apply { hint = "https://relay.example.com"; setText(prefs.getString("endpoint", "")) }
         val token = EditText(this).apply { hint = "Companion device token"; setText(prefs.getString("token", "")) }
+        // Persist during entry, so a back press, overlay permission round-trip,
+        // or process shutdown cannot discard an already paired device token.
+        endpoint.doAfterTextChanged { prefs.edit().putString("endpoint", it?.toString()?.trim()?.removeSuffix("/") ?: "").apply() }
+        token.doAfterTextChanged { prefs.edit().putString("token", it?.toString()?.trim() ?: "").apply() }
         root.addView(endpoint); root.addView(token)
         val petLabel = TextView(this).apply { text = "Pet: loading shared library…" }
         val pets = Spinner(this)
