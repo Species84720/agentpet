@@ -19,6 +19,7 @@ import org.json.JSONObject
 class PetOverlayService : Service() {
     companion object {
         const val ACTION_RELAY_STATUS = "online.thenightwatcher.agentpet.RELAY_STATUS"
+        const val ACTION_CARE_UPDATED = "online.thenightwatcher.agentpet.CARE_UPDATED"
         const val EXTRA_RELAY_STATUS = "status"
     }
     private lateinit var windowManager: WindowManager
@@ -134,6 +135,7 @@ class PetOverlayService : Service() {
         val event = frame.optJSONObject("event") ?: return@post
         event.optString("sessionId").takeIf(String::isNotBlank)?.let { sessions[it] = event }
         MobilePetCare.recordEvent(this, event)
+        sendBroadcast(Intent(ACTION_CARE_UPDATED).setPackage(packageName))
         renderEvent(event)
     }
     private fun moodFor(event: JSONObject): String {

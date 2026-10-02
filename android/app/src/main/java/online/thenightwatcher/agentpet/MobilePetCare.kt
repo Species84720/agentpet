@@ -15,13 +15,14 @@ object MobilePetCare {
 
     data class State(
         val xp: Int, val tokensToday: Int, val mealsToday: Int,
-        val totalTokens: Int, val totalMeals: Int, val streakDays: Int,
+        val totalTokens: Int, val totalMeals: Int, val queriesToday: Int, val totalQueries: Int, val streakDays: Int,
         val lastFedAt: Long,
     ) {
         val internalLevel: Int get() { var level = 1; while (60 * (level + 1) * level <= xp) level++; return level }
         val displayLevel: Int get() = max(0, internalLevel - 1)
         val stage: String get() = when { internalLevel < 5 -> "Hatchling"; internalLevel < 10 -> "Companion"; internalLevel < 20 -> "Scout"; internalLevel < 35 -> "Hero"; else -> "Legend" }
         val progress: Int get() { val floor = 60 * internalLevel * (internalLevel - 1); val ceil = 60 * (internalLevel + 1) * internalLevel; return (((xp - floor).toDouble() / (ceil - floor)) * 100).toInt().coerceIn(0, 100) }
+        val tokensToNextLevel: Int get() { val next = 60 * (internalLevel + 1) * internalLevel; return max(0, (next - xp) * TOKENS_PER_XP) }
         val hunger: String get() { val hours = if (lastFedAt == 0L) 12.0 else (System.currentTimeMillis() - lastFedAt) / 3_600_000.0; return when { hours < 4 -> "Full"; hours < 10 -> "Satisfied"; hours < 24 -> "Peckish"; hours < 48 -> "Hungry"; else -> "Starving" } }
         val achievements: List<String> get() = buildList {
             if (totalMeals >= 1) add("🍽 First Meal"); if (totalMeals >= 100) add("🏆 100 Sessions"); if (totalMeals >= 500) add("🥇 500 Sessions")
@@ -34,7 +35,7 @@ object MobilePetCare {
     fun state(context: Context): State {
         val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         rollover(p, today())
-        return State(p.getInt("xp", 0), p.getInt("tokens_today", 0), p.getInt("meals_today", 0), p.getInt("total_tokens", 0), p.getInt("total_meals", 0), p.getInt("streak", 0), p.getLong("last_fed", 0))
+        return State(p.getInt("xp", 0), p.getInt("tokens_today", 0), p.getInt("meals_today", 0), p.getInt("total_tokens", 0), p.getInt("total_meals", 0), p.getInt("queries_today", 0), p.getInt("total_queries", 0), p.getInt("streak", 0), p.getLong("last_fed", 0))
     }
 
     fun feed(context: Context, tokens: Int = 25_000) {
@@ -48,6 +49,16 @@ object MobilePetCare {
 
     fun recordEvent(context: Context, event: JSONObject) {
         val name = event.optString("eventName").lowercase()
+        if (name in setOf("userpromptsubmit", "user_prompt_submit", "beforeagent", "preinvocation")) {
+            val settings = context.getSharedPreferences("relay", Context.MODE_PRIVATE)
+            if (settings.getBoolean("care_reward_queries", true)) {
+                feed(context, settings.getInt("care_query_tokens", TOKENS_PER_XP).coerceIn(1_000, 25_000))
+                val queryPrefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                queryPrefs.edit().putInt("queries_today", queryPrefs.getInt("queries_today", 0) + 1)
+                    .putInt("total_queries", queryPrefs.getInt("total_queries", 0) + 1).apply()
+            }
+            return
+        }
         if (name !in setOf("stop", "done", "sessionend", "session_end")) return
         val id = event.optString("sessionId"); if (id.isBlank()) return
         val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -62,7 +73,7 @@ object MobilePetCare {
     fun reset(context: Context) { context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().apply() }
 
     private fun today() = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
-    private fun rollover(p: android.content.SharedPreferences, day: String) { if (p.getString("day", "") != day) p.edit().putString("day", day).putInt("tokens_today", 0).putInt("meals_today", 0).apply() }
+    private fun rollover(p: android.content.SharedPreferences, day: String) { if (p.getString("day", "") != day) p.edit().putString("day", day).putInt("tokens_today", 0).putInt("meals_today", 0).putInt("queries_today", 0).apply() }
     private fun markFed(p: android.content.SharedPreferences) {
         val now = System.currentTimeMillis(); val day = today(); val prior = p.getString("last_fed_day", null)
         val yesterday = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(now - 86_400_000))

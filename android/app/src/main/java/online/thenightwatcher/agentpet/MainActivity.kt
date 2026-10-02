@@ -18,9 +18,11 @@ import androidx.core.content.ContextCompat
 /** Small pairing screen. The floating companion itself is owned by the service. */
 class MainActivity : AppCompatActivity() {
     private lateinit var overlayStatus: TextView
+    private var careStatus: TextView? = null
     private val statusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
-            showOverlayStatus(intent.getStringExtra(PetOverlayService.EXTRA_RELAY_STATUS))
+            if (intent.action == PetOverlayService.ACTION_CARE_UPDATED) refreshCareStatus()
+            else showOverlayStatus(intent.getStringExtra(PetOverlayService.EXTRA_RELAY_STATUS))
         }
     }
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -106,12 +108,13 @@ class MainActivity : AppCompatActivity() {
         listOf("idle", "working", "waiting", "done", "celebrate").forEach { state -> root.addView(EditText(this).apply { hint = "Custom $state message"; setText(prefs.getString("message_$state", "")); doAfterTextChanged { prefs.edit().putString("message_$state", it.toString()).apply() } }) }
 
         root.addView(heading("Android pet care"))
-        val care = TextView(this).apply { setTextColor(Color.WHITE); textSize = 16f; setPadding(16, 16, 16, 16); setBackgroundColor(Color.rgb(34, 43, 60)) }
-        fun renderCare() { val s = MobilePetCare.state(this); care.text = "${s.stage} · Lv ${s.displayLevel} · ${s.hunger}\nXP ${s.xp} · ${s.progress}% to next level\nToday ${s.tokensToday} tokens · ${s.mealsToday} sessions\nLifetime ${s.totalTokens} tokens · ${s.totalMeals} sessions · ${s.streakDays}-day streak\n\n${s.achievements.ifEmpty { listOf("No achievements yet") }.joinToString("\n")}" }
-        renderCare(); root.addView(care)
-        root.addView(Button(this).apply { text = "Feed snack (+25K tokens)"; setOnClickListener { MobilePetCare.feed(this@MainActivity); renderCare() } })
-        root.addView(Button(this).apply { text = "Play (+10 XP)"; setOnClickListener { MobilePetCare.play(this@MainActivity); renderCare() } })
-        root.addView(Button(this).apply { text = "Reset Android care"; setOnClickListener { AlertDialog.Builder(this@MainActivity).setTitle("Reset Android care?").setNegativeButton("Cancel", null).setPositiveButton("Reset") { _, _ -> MobilePetCare.reset(this@MainActivity); renderCare() }.show() } })
+        val care = TextView(this).apply { setTextColor(Color.WHITE); textSize = 16f; setPadding(16, 16, 16, 16); setBackgroundColor(Color.rgb(34, 43, 60)) }; careStatus = care
+        refreshCareStatus(); root.addView(care)
+        root.addView(CheckBox(this).apply { text = "Award care XP for each query"; isChecked = prefs.getBoolean("care_reward_queries", true); setTextColor(Color.WHITE); setOnCheckedChangeListener { _, checked -> prefs.edit().putBoolean("care_reward_queries", checked).apply() } })
+        val queryRewardLabel = TextView(this); val queryReward = SeekBar(this).apply { max = 24; progress = prefs.getInt("care_query_tokens", 5_000).coerceIn(1_000, 25_000) / 1_000 - 1 }; fun paintQueryReward() { queryRewardLabel.text = "Query reward: ${(queryReward.progress + 1) * 1_000} tokens (${(queryReward.progress + 1) / 5.0} XP)" }; paintQueryReward(); queryReward.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener { override fun onProgressChanged(s: SeekBar?, p: Int, u: Boolean) { prefs.edit().putInt("care_query_tokens", (p + 1) * 1_000).apply(); paintQueryReward() }; override fun onStartTrackingTouch(s: SeekBar?) = Unit; override fun onStopTrackingTouch(s: SeekBar?) = Unit }); root.addView(queryRewardLabel); root.addView(queryReward)
+        root.addView(Button(this).apply { text = "Feed snack (+25K tokens)"; setOnClickListener { MobilePetCare.feed(this@MainActivity); refreshCareStatus() } })
+        root.addView(Button(this).apply { text = "Play (+10 XP)"; setOnClickListener { MobilePetCare.play(this@MainActivity); refreshCareStatus() } })
+        root.addView(Button(this).apply { text = "Reset Android care"; setOnClickListener { AlertDialog.Builder(this@MainActivity).setTitle("Reset Android care?").setNegativeButton("Cancel", null).setPositiveButton("Reset") { _, _ -> MobilePetCare.reset(this@MainActivity); refreshCareStatus() }.show() } })
 
         root.addView(heading("Connection & history"))
         root.addView(Button(this).apply {
@@ -198,7 +201,7 @@ class MainActivity : AppCompatActivity() {
     }
     override fun onStart() {
         super.onStart()
-        ContextCompat.registerReceiver(this, statusReceiver, IntentFilter(PetOverlayService.ACTION_RELAY_STATUS), ContextCompat.RECEIVER_NOT_EXPORTED)
+        ContextCompat.registerReceiver(this, statusReceiver, IntentFilter().apply { addAction(PetOverlayService.ACTION_RELAY_STATUS); addAction(PetOverlayService.ACTION_CARE_UPDATED) }, ContextCompat.RECEIVER_NOT_EXPORTED)
         if (::overlayStatus.isInitialized) showOverlayStatus()
     }
     override fun onStop() { unregisterReceiver(statusReceiver); super.onStop() }
@@ -206,6 +209,10 @@ class MainActivity : AppCompatActivity() {
         val text = getSharedPreferences("overlay", MODE_PRIVATE).getString("last_error", "") ?: ""
         val connection = liveStatus ?: getSharedPreferences("relay", MODE_PRIVATE).getString("connection_status", "NOT CONNECTED — start the pet to connect")
         overlayStatus.text = if (text.isBlank()) "Cloudflare relay\n$connection" else "Overlay issue: $text"
+    }
+    private fun refreshCareStatus() {
+        val s = MobilePetCare.state(this)
+        careStatus?.text = "${s.stage} · Lv ${s.displayLevel} · ${s.hunger}\nXP ${s.xp} · ${s.progress}% · ${s.tokensToNextLevel} tokens to next level\nToday ${s.tokensToday} tokens · ${s.queriesToday} queries · ${s.mealsToday} sessions\nLifetime ${s.totalTokens} tokens · ${s.totalQueries} queries · ${s.totalMeals} sessions\nStreak ${s.streakDays} days\n\n${s.achievements.ifEmpty { listOf("No achievements yet") }.joinToString("\n")}" }
     }
     private fun startPet() {
         try {
