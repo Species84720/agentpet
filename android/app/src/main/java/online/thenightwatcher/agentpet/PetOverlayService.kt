@@ -17,6 +17,10 @@ import org.json.JSONObject
 
 /** Messenger-style, user-draggable overlay. It contains no credentials in its UI. */
 class PetOverlayService : Service() {
+    companion object {
+        const val ACTION_RELAY_STATUS = "online.thenightwatcher.agentpet.RELAY_STATUS"
+        const val EXTRA_RELAY_STATUS = "status"
+    }
     private lateinit var windowManager: WindowManager
     private var overlay: FrameLayout? = null
     private var sprite: PetSpriteView? = null
@@ -85,13 +89,14 @@ class PetOverlayService : Service() {
             prefs.getString("endpoint", "") ?: "",
             prefs.getString("token", "") ?: "",
             { updatePet(it) },
-            { setConnectionStatus("Connected to relay") },
-            { setConnectionStatus("Reconnecting to relay…"); reconnectHandler.removeCallbacks(reconnect); reconnectHandler.postDelayed(reconnect, 5_000) },
+            { setConnectionStatus("CONNECTED — live updates active") },
+            { reason -> setConnectionStatus("DISCONNECTED — $reason"); reconnectHandler.removeCallbacks(reconnect); reconnectHandler.postDelayed(reconnect, 5_000) },
         )
         client?.connect()
     }
     private fun setConnectionStatus(status: String) {
         getSharedPreferences("relay", MODE_PRIVATE).edit().putString("connection_status", status).apply()
+        sendBroadcast(Intent(ACTION_RELAY_STATUS).setPackage(packageName).putExtra(EXTRA_RELAY_STATUS, status))
         if (::windowManager.isInitialized) getSystemService(NotificationManager::class.java).notify(7, notification())
     }
     private fun updatePet(frame: JSONObject) = Handler(mainLooper).post {

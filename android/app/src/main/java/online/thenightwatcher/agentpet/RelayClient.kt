@@ -9,22 +9,22 @@ class RelayClient(
     private val token: String,
     private val onMessage: (JSONObject) -> Unit,
     private val onConnected: () -> Unit = {},
-    private val onDisconnected: () -> Unit = {},
+    private val onDisconnected: (String) -> Unit = {},
 ) {
     private val client = OkHttpClient.Builder().pingInterval(25, TimeUnit.SECONDS).build()
     private var socket: WebSocket? = null
     private var manuallyClosed = false
     fun connect() {
-        if (endpoint.isBlank() || token.isBlank()) return
+        if (endpoint.isBlank() || token.isBlank()) { onDisconnected("Endpoint or device token is missing"); return }
         manuallyClosed = false
         val wsUrl = endpoint.replaceFirst("https://", "wss://").replaceFirst("http://", "ws://") + "/v1/live"
         socket = client.newWebSocket(Request.Builder().url(wsUrl).header("Authorization", "Bearer $token").build(), object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) = onConnected()
             override fun onMessage(webSocket: WebSocket, text: String) { runCatching { onMessage(JSONObject(text)) } }
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                if (!manuallyClosed) onDisconnected()
+                if (!manuallyClosed) onDisconnected(t.message ?: response?.message ?: "WebSocket connection failed")
             }
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) { if (!manuallyClosed) onDisconnected() }
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) { if (!manuallyClosed) onDisconnected(reason.ifBlank { "WebSocket closed ($code)" }) }
         })
     }
     fun close() { manuallyClosed = true; socket?.close(1000, "stopped"); client.dispatcher.executorService.shutdown() }

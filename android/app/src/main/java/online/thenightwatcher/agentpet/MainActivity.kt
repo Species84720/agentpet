@@ -1,6 +1,9 @@
 package online.thenightwatcher.agentpet
 
 import android.content.Intent
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.IntentFilter
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
@@ -9,17 +12,23 @@ import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.app.AlertDialog
 import androidx.core.widget.doAfterTextChanged
+import androidx.core.content.ContextCompat
 
 /** Small pairing screen. The floating companion itself is owned by the service. */
 class MainActivity : AppCompatActivity() {
     private lateinit var overlayStatus: TextView
+    private val statusReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            showOverlayStatus(intent.getStringExtra(PetOverlayService.EXTRA_RELAY_STATUS))
+        }
+    }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val prefs = getSharedPreferences("relay", MODE_PRIVATE)
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(48, 72, 48, 48) }
         root.addView(TextView(this).apply { text = "AgentPet companion"; textSize = 24f })
         root.addView(TextView(this).apply { text = "Pair this Android pet with your Cloudflare relay." })
-        overlayStatus = TextView(this).apply { textSize = 13f }
+        overlayStatus = TextView(this).apply { textSize = 15f; setPadding(16, 16, 16, 16) }
         root.addView(overlayStatus)
         val endpoint = EditText(this).apply { hint = "https://relay.example.com"; setText(prefs.getString("endpoint", "")) }
         val token = EditText(this).apply { hint = "Companion device token"; setText(prefs.getString("token", "")) }
@@ -86,11 +95,16 @@ class MainActivity : AppCompatActivity() {
         setContentView(root)
         showOverlayStatus()
     }
-    override fun onResume() { super.onResume(); if (::overlayStatus.isInitialized) showOverlayStatus() }
-    private fun showOverlayStatus() {
+    override fun onStart() {
+        super.onStart()
+        ContextCompat.registerReceiver(this, statusReceiver, IntentFilter(PetOverlayService.ACTION_RELAY_STATUS), ContextCompat.RECEIVER_NOT_EXPORTED)
+        if (::overlayStatus.isInitialized) showOverlayStatus()
+    }
+    override fun onStop() { unregisterReceiver(statusReceiver); super.onStop() }
+    private fun showOverlayStatus(liveStatus: String? = null) {
         val text = getSharedPreferences("overlay", MODE_PRIVATE).getString("last_error", "") ?: ""
-        val connection = getSharedPreferences("relay", MODE_PRIVATE).getString("connection_status", "Not connected")
-        overlayStatus.text = if (text.isBlank()) "Relay: $connection" else "Overlay issue: $text"
+        val connection = liveStatus ?: getSharedPreferences("relay", MODE_PRIVATE).getString("connection_status", "NOT CONNECTED — start the pet to connect")
+        overlayStatus.text = if (text.isBlank()) "Cloudflare relay\n$connection" else "Overlay issue: $text"
     }
     private fun startPet() {
         try {
