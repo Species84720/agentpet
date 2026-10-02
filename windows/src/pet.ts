@@ -186,7 +186,15 @@ export class Pet {
 
   private draw() {
     const { width: W, height: H } = this.canvas;
-    this.ctx.clearRect(0, 0, W, H);
+    // Replace the complete backing surface with transparent pixels. `clearRect`
+    // should normally be equivalent, but an explicit copy operation avoids
+    // stale transparent/partially composited pixels surviving between frames
+    // on transparent desktop overlays.
+    this.ctx.save();
+    this.ctx.globalCompositeOperation = "copy";
+    this.ctx.fillStyle = "rgba(0, 0, 0, 0)";
+    this.ctx.fillRect(0, 0, W, H);
+    this.ctx.restore();
 
     let r: Rect;
     let scaleW: number; // width used for the scale , per CLIP, not per frame

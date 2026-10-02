@@ -94,8 +94,26 @@ fn config_path(kind: &str) -> Option<PathBuf> {
     Some(p)
 }
 
+fn hook_executable(current: Option<&str>, appimage: Option<&str>) -> String {
+    let transient_appimage = |path: &str| {
+        path.contains("/.mount_") || path.contains("\\.mount_")
+    };
+    if let Some(path) = current.filter(|p| !transient_appimage(p)) {
+        return path.to_string();
+    }
+    // If the process was launched from an AppImage mount, prefer the stable
+    // APPIMAGE file path when available. Never write the transient mount path
+    // into an agent config; it disappears when the AppImage exits.
+    if let Some(path) = appimage.filter(|p| !transient_appimage(p)) {
+        return path.to_string();
+    }
+    "agentpet".into()
+}
+
 fn hook_command() -> String {
-    let exe = std::env::current_exe().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| "agentpet".into());
+    let current = std::env::current_exe().ok().map(|p| p.to_string_lossy().into_owned());
+    let appimage = std::env::var("APPIMAGE").ok();
+    let exe = hook_executable(current.as_deref(), appimage.as_deref());
     format!("\"{}\" hook --agent", exe)
 }
 fn full_command(kind: &str) -> String { format!("{} {}", hook_command(), kind) }
@@ -287,6 +305,38 @@ fn pi_extension(binary: &str) -> String {
          \x20 pi.on(\"session_shutdown\", async (_e, ctx) => send(\"done\", ctx))\n\
          }}\n"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::hook_executable;
+
+    #[test]
+    fn rejects_transient_appimage_mount_path() {
+        assert_eq!(
+            hook_executable(Some("/tmp/.mount_AgentPet123/usr/bin/agentpet"), None),
+            "agentpet"
+        );
+    }
+
+    #[test]
+    fn prefers_stable_appimage_path_when_current_path_is_transient() {
+        assert_eq!(
+            hook_executable(
+                Some("/tmp/.mount_AgentPet123/usr/bin/agentpet"),
+                Some("/home/me/AgentPet.AppImage")
+            ),
+            "/home/me/AgentPet.AppImage"
+        );
+    }
+
+    #[test]
+    fn keeps_permanently_installed_executable_path() {
+        assert_eq!(
+            hook_executable(Some(r"C:\Users\me\AppData\Local\AgentPet\agentpet.exe"), None),
+            r"C:\Users\me\AppData\Local\AgentPet\agentpet.exe"
+        );
+    }
 }
 
 /// Ensure `[features] hooks = true` in ~/.codex/config.toml (modern key; the

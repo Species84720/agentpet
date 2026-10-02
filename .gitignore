@@ -29,3 +29,4 @@ landing/node_modules/
 
 # Local agent memory , never commit
 /CLAUDE.md
+/graphify-out
