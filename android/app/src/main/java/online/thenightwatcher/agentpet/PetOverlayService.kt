@@ -26,9 +26,17 @@ class PetOverlayService : Service() {
     private val reconnect = Runnable { connect() }
     private var x = 0; private var y = 180
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForeground(7, notification())
-        if (!Settings.canDrawOverlays(this)) { stopSelf(); return START_NOT_STICKY }
-        if (overlay == null) runCatching { showPet() }.onFailure { stopSelf() }
+        runCatching {
+            startForeground(7, notification())
+            check(Settings.canDrawOverlays(this)) { "Display over other apps is not enabled." }
+            if (overlay == null) showPet()
+            getSharedPreferences("overlay", MODE_PRIVATE).edit().remove("last_error").apply()
+        }.onFailure { error ->
+            getSharedPreferences("overlay", MODE_PRIVATE).edit()
+                .putString("last_error", "${error.javaClass.simpleName}: ${error.message ?: "Android rejected the overlay"}").apply()
+            stopSelf()
+            return START_NOT_STICKY
+        }
         connect()
         return START_STICKY
     }

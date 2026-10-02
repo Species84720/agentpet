@@ -12,12 +12,15 @@ import androidx.core.widget.doAfterTextChanged
 
 /** Small pairing screen. The floating companion itself is owned by the service. */
 class MainActivity : AppCompatActivity() {
+    private lateinit var overlayStatus: TextView
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val prefs = getSharedPreferences("relay", MODE_PRIVATE)
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(48, 72, 48, 48) }
         root.addView(TextView(this).apply { text = "AgentPet companion"; textSize = 24f })
         root.addView(TextView(this).apply { text = "Pair this Android pet with your Cloudflare relay." })
+        overlayStatus = TextView(this).apply { textSize = 13f }
+        root.addView(overlayStatus)
         val endpoint = EditText(this).apply { hint = "https://relay.example.com"; setText(prefs.getString("endpoint", "")) }
         val token = EditText(this).apply { hint = "Companion device token"; setText(prefs.getString("token", "")) }
         // Persist during entry, so a back press, overlay permission round-trip,
@@ -69,11 +72,17 @@ class MainActivity : AppCompatActivity() {
             }
         })
         setContentView(root)
+        showOverlayStatus()
+    }
+    override fun onResume() { super.onResume(); if (::overlayStatus.isInitialized) showOverlayStatus() }
+    private fun showOverlayStatus() {
+        val text = getSharedPreferences("overlay", MODE_PRIVATE).getString("last_error", "") ?: ""
+        overlayStatus.text = if (text.isBlank()) "Overlay status: not running" else "Overlay issue: $text"
     }
     private fun startPet() {
         try {
             startForegroundService(Intent(this, PetOverlayService::class.java))
-            Toast.makeText(this, "Pet started — it is floating above this screen.", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Starting floating pet…", Toast.LENGTH_SHORT).show()
         } catch (error: SecurityException) {
             Toast.makeText(this, "Android blocked the overlay: allow Display over other apps and try again.", Toast.LENGTH_LONG).show()
         } catch (error: Exception) {
