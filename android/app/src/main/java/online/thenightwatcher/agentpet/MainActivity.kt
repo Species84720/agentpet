@@ -7,6 +7,7 @@ import android.provider.Settings
 import android.view.Gravity
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.app.AlertDialog
 
 /** Small pairing screen. The floating companion itself is owned by the service. */
 class MainActivity : AppCompatActivity() {
@@ -35,7 +36,11 @@ class MainActivity : AppCompatActivity() {
                 AlertDialog.Builder(this@MainActivity).setTitle("Clear cloud logs?")
                     .setMessage("This permanently removes activity history from Cloudflare. Your pet profile and current popup state remain.")
                     .setNegativeButton("Cancel", null).setPositiveButton("Clear") { _, _ ->
-                        RelayClient(endpoint.text.toString().trim().removeSuffix("/"), token.text.toString().trim()) { }
+                        RelayClient(
+                            endpoint = endpoint.text.toString().trim().removeSuffix("/"),
+                            token = token.text.toString().trim(),
+                            onMessage = {},
+                        )
                             .clearLogs { ok -> runOnUiThread { Toast.makeText(this@MainActivity, if (ok) "Cloud history cleared" else "Could not clear history", Toast.LENGTH_SHORT).show() } }
                     }.show()
             }
