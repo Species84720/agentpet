@@ -77,7 +77,8 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() { super.onResume(); if (::overlayStatus.isInitialized) showOverlayStatus() }
     private fun showOverlayStatus() {
         val text = getSharedPreferences("overlay", MODE_PRIVATE).getString("last_error", "") ?: ""
-        overlayStatus.text = if (text.isBlank()) "Overlay status: not running" else "Overlay issue: $text"
+        val connection = getSharedPreferences("relay", MODE_PRIVATE).getString("connection_status", "Not connected")
+        overlayStatus.text = if (text.isBlank()) "Relay: $connection" else "Overlay issue: $text"
     }
     private fun startPet() {
         try {

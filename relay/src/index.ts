@@ -64,11 +64,22 @@ export default {
     const auth = await authenticate(request, env);
     if (!auth) return json({ error: "unauthorized" }, 401);
 
-    if (url.pathname === "/v1/live" && request.headers.get("upgrade") === "websocket") {
+    if (url.pathname === "/v1/live-status" && request.method === "GET") {
+      return room(env, auth.userId).fetch("https://room/status");
+    }
+    if (url.pathname === "/v1/live") {
+      if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
+        return json({ error: "WebSocket upgrade required" }, 426);
+      }
       // Tokens travel in Sec-WebSocket-Protocol, not URLs. Validate it against
       // the already authenticated Authorization header before passing to the DO.
       if (auth.role !== "companion") return json({ error: "companion token required" }, 403);
-      return room(env, auth.userId).fetch("https://room/live", { headers: { "x-device-role": auth.role } });
+      // The Durable Object must receive Upgrade as well. Omitting it makes
+      // Workers reject the DO's WebSocket response with its misleading
+      // "request did not contain Upgrade" error.
+      return room(env, auth.userId).fetch("https://room/live", {
+        headers: { "x-device-role": auth.role, "Upgrade": "websocket" },
+      });
     }
     if (url.pathname === "/v1/events" && request.method === "POST") {
       if (auth.role !== "agent") return json({ error: "agent token required" }, 403);
@@ -138,9 +149,11 @@ export class PetRoom implements DurableObject {
       const [client, server] = Object.values(pair);
       this.ctx.acceptWebSocket(server);
       server.serializeAttachment({ kind: "companion" });
+      server.send(JSON.stringify({ type: "connected", connectedAt: Date.now(), companions: this.ctx.getWebSockets().length }));
       server.send(JSON.stringify({ type: "snapshot", sessions: [...this.sessions.values()] }));
       return new Response(null, { status: 101, webSocket: client });
     }
+    if (path === "/status") return json({ companions: this.ctx.getWebSockets().length, checkedAt: Date.now() });
     if (path === "/publish" && request.method === "POST") {
       const message = await request.json<any>();
       if (message.type === "event" && eventIsValid(message.event)) {

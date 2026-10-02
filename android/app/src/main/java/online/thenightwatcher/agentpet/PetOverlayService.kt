@@ -45,7 +45,8 @@ class PetOverlayService : Service() {
     private fun notification(): Notification {
         val channel = NotificationChannel("agentpet", "AgentPet companion", NotificationManager.IMPORTANCE_LOW)
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
-        return NotificationCompat.Builder(this, "agentpet").setSmallIcon(android.R.drawable.presence_online).setContentTitle("AgentPet is watching").setContentText("Tap the app to configure your floating companion.").build()
+        val status = getSharedPreferences("relay", MODE_PRIVATE).getString("connection_status", "Connecting to relay…")
+        return NotificationCompat.Builder(this, "agentpet").setSmallIcon(android.R.drawable.presence_online).setContentTitle("AgentPet is watching").setContentText(status).build()
     }
     private fun showPet() {
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
@@ -78,14 +79,20 @@ class PetOverlayService : Service() {
     }
     private fun connect() {
         val prefs = getSharedPreferences("relay", MODE_PRIVATE)
+        setConnectionStatus("Connecting to relay…")
         client?.close()
         client = RelayClient(
             prefs.getString("endpoint", "") ?: "",
             prefs.getString("token", "") ?: "",
             { updatePet(it) },
-            { reconnectHandler.removeCallbacks(reconnect); reconnectHandler.postDelayed(reconnect, 5_000) },
+            { setConnectionStatus("Connected to relay") },
+            { setConnectionStatus("Reconnecting to relay…"); reconnectHandler.removeCallbacks(reconnect); reconnectHandler.postDelayed(reconnect, 5_000) },
         )
         client?.connect()
+    }
+    private fun setConnectionStatus(status: String) {
+        getSharedPreferences("relay", MODE_PRIVATE).edit().putString("connection_status", status).apply()
+        if (::windowManager.isInitialized) getSystemService(NotificationManager::class.java).notify(7, notification())
     }
     private fun updatePet(frame: JSONObject) = Handler(mainLooper).post {
         val event = frame.optJSONObject("event") ?: return@post
