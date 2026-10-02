@@ -2,6 +2,7 @@ plugins { id("com.android.application"); id("org.jetbrains.kotlin.android") }
 
 android { namespace = "online.thenightwatcher.agentpet"; compileSdk = 35
     defaultConfig { applicationId = "online.thenightwatcher.agentpet"; minSdk = 26; targetSdk = 35; versionCode = 1; versionName = "0.1.0" }
+    kotlinOptions { jvmTarget = "1.8" }
 }
 dependencies {
     implementation("androidx.core:core-ktx:1.15.0")

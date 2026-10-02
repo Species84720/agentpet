@@ -6,7 +6,7 @@
     "bindings": [{ "name": "ROOM", "class_name": "PetRoom" }]
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["PetRoom"] }],
-  "d1_databases": [{ "binding": "DB", "database_name": "agentpet-relay", "database_id": "REPLACE_WITH_D1_DATABASE_ID" }],
+	"d1_databases": [{ "binding": "DB", "database_name": "agentpet-relay", "database_id": "d098fa16-6a8b-4baf-83c3-df6c2b47c266" }],
   "vars": { "LOG_RETENTION_DAYS": "30" },
   "observability": { "enabled": true }
 }
