@@ -64,7 +64,7 @@ def local_request(body: dict, result: queue.Queue) -> None:
     try:
         with urllib.request.urlopen(request, timeout=APPROVAL_TIMEOUT_SECONDS + 5) as response:
             decision = response.read().decode("utf-8").strip()
-            if decision in ("allow", "deny"):
+            if decision in ("allow", "deny", "ask"):
                 result.put(decision)
     except (OSError, urllib.error.URLError):
         pass
@@ -80,6 +80,22 @@ def local_resolve(request_id: str, decision: str) -> None:
         pass
 
 
+def local_cancel(request_id: str) -> None:
+    data = json.dumps({"id": request_id}).encode("utf-8")
+    request = urllib.request.Request(LOCAL_HOOK_URL + "/cancel", data=data, method="POST",
+                                     headers={"Content-Type": "application/json"})
+    try:
+        urllib.request.urlopen(request, timeout=2).close()
+    except (OSError, urllib.error.URLError):
+        pass
+
+
+def ensure_relay_approval(base_url: str, token: str, approval: dict) -> None:
+    while relay_json(base_url + "/v1/approvals", token, approval, timeout=3) is None:
+        print("AgentPet: approval relay unavailable; request remains pending and will retry.", file=sys.stderr, flush=True)
+        time.sleep(5)
+
+
 def codex_permission_hook(payload: dict, raw_payload: bytes, base_url: str, token: str) -> None:
     """Race the local AgentPet bubble against Android; first decision wins."""
     session_id = payload.get("session_id") or payload.get("conversation_id") or ""
@@ -93,10 +109,12 @@ def codex_permission_hook(payload: dict, raw_payload: bytes, base_url: str, toke
     approval = {"requestId": request_id, "sessionId": session_id, "agentKind": "Codex",
                 "toolName": str(tool_name)[:100], "summary": summary[:4000], "project": project[:500]}
 
-    # Approval details live only in the Durable Object's short-lived state;
+    # Approval details live only in the Durable Object's private state;
     # never append commands or approval payloads to the D1 activity log.
     if base_url and token:
-        relay_json(base_url + "/v1/approvals", token, approval, timeout=3)
+        # Register asynchronously so a relay outage never suppresses the local
+        # desktop prompt. Retry to keep the phone in sync when available.
+        threading.Thread(target=ensure_relay_approval, args=(base_url, token, approval), daemon=True).start()
     local_event = {"agent": "codex", "event": "PermissionRequest", "session": session_id,
                    "project": project, "message": "Approval required", "tool": str(tool_name),
                    "desc": summary[:4000], "approvalRequestId": request_id}
@@ -105,29 +123,31 @@ def codex_permission_hook(payload: dict, raw_payload: bytes, base_url: str, toke
 
     deadline = time.monotonic() + APPROVAL_TIMEOUT_SECONDS
     decision = None
-    while time.monotonic() < deadline:
+    while decision not in ("allow", "deny") and time.monotonic() < deadline:
         try:
-            decision = local_result.get_nowait()
+            local_decision = local_result.get(timeout=min(0.5, max(0.0, deadline - time.monotonic())))
+            if local_decision in ("allow", "deny"):
+                decision = local_decision
+            elif local_decision == "ask":
+                break
         except queue.Empty:
             result = relay_json(base_url + "/v1/approvals/" + request_id, token, timeout=1.5) if base_url and token else None
             if result and result.get("decision") in ("allow", "deny"):
                 decision = result["decision"]
                 local_resolve(request_id, decision)
                 break
-            time.sleep(0.5)
         if decision:
-            if base_url and token:
-                relay_json(base_url + "/v1/approvals/" + request_id + "/decision", token,
-                           {"decision": decision}, timeout=2)
             break
 
-    # Fail closed instead of leaving Codex's native approval prompt hanging.
     if decision not in ("allow", "deny"):
-        decision = "deny"
+        # End the mirrored prompts without making a decision. Empty hook output
+        # deliberately hands the still-pending request back to Codex's UI.
         if base_url and token:
-            relay_json(base_url + "/v1/approvals/" + request_id + "/decision", token,
-                       {"decision": decision}, timeout=2)
-        local_resolve(request_id, decision)
+            relay_json(base_url + "/v1/approvals/" + request_id + "/cancel", token,
+                       {"reason": "local_permission_fallback"}, timeout=2)
+        local_cancel(request_id)
+        return
+
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "PermissionRequest",
                                                 "decision": {"behavior": decision}}}))
 

@@ -184,8 +184,9 @@ class PetOverlayService : Service() {
             "approval_resolved" -> {
                 if (frame.optString("requestId") == pendingApproval?.optString("requestId")) {
                     pendingApproval = null
-                    bubble?.text = "Approval answered · resuming"
-                    sprite?.setMood("working")
+                    val expired = frame.optBoolean("expired") || frame.optBoolean("cancelled")
+                    bubble?.text = if (expired) "Timed out · approve in Codex" else "Approval answered · resuming"
+                    sprite?.setMood(if (expired) "waiting" else "working")
                     reconnectHandler.postDelayed({ if (pendingApproval == null) sessions.values.maxByOrNull(::eventTimeMs)?.let(::renderEvent) }, 2_000)
                 }
                 return@post

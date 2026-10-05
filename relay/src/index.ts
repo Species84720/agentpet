@@ -9,7 +9,7 @@ type Device = { token_hash: string; user_id: string; name: string; role: "agent"
 type Event = Record<string, unknown> & { sessionId: string; eventName: string; timestamp?: number };
 type Auth = { userId: string; deviceHash: string; role: Device["role"] };
 type CareDelta = { id?: string; sessionId: string; agentKind?: string; tokens: number; project?: string; createdAt?: number };
-type Approval = { requestId: string; sessionId: string; agentKind: string; toolName: string; summary: string; project?: string; createdAt: number; expiresAt: number; decision?: "allow" | "deny" };
+type Approval = { requestId: string; sessionId: string; agentKind: string; toolName: string; summary: string; project?: string; createdAt: number; expiresAt: number; decision?: "allow" | "deny"; resolvedAt?: number; cancelledAt?: number };
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), {
   status, headers: { "content-type": "application/json", "cache-control": "no-store" },
@@ -117,7 +117,7 @@ export default {
       };
       return room(env, auth.userId).fetch("https://room/approval/create", { method: "POST", body: JSON.stringify(approval) });
     }
-    const approvalMatch = url.pathname.match(/^\/v1\/approvals\/([a-zA-Z0-9_-]{16,100})(?:\/(decision))?$/);
+    const approvalMatch = url.pathname.match(/^\/v1\/approvals\/([a-zA-Z0-9_-]{16,100})(?:\/(decision|cancel))?$/);
     if (approvalMatch) {
       const requestId = approvalMatch[1];
       if (request.method === "GET") {
@@ -128,6 +128,9 @@ export default {
         const body = await request.json<any>().catch(() => null);
         if (body?.decision !== "allow" && body?.decision !== "deny") return json({ error: "decision must be allow or deny" }, 400);
         return room(env, auth.userId).fetch(`https://room/approval/decision?id=${encodeURIComponent(requestId)}`, { method: "POST", body: JSON.stringify({ decision: body.decision }) });
+      }
+      if (request.method === "POST" && approvalMatch[2] === "cancel") {
+        return room(env, auth.userId).fetch(`https://room/approval/cancel?id=${encodeURIComponent(requestId)}`, { method: "POST" });
       }
     }
     if (url.pathname === "/v1/care-deltas" && request.method === "POST") {
@@ -223,6 +226,12 @@ export class PetRoom implements DurableObject {
       this.sessions = new Map(saved || []);
       const approvals = await this.ctx.storage.get<[string, Approval][]>("approvals");
       this.approvals = new Map(approvals || []);
+      // Give in-flight approvals created by the earlier no-expiry Worker build
+      // the same three-minute lifetime as new requests.
+      for (const approval of this.approvals.values()) {
+        if (!approval.expiresAt) approval.expiresAt = approval.createdAt + 180_000;
+      }
+      await this.scheduleApprovalAlarm();
     });
   }
   async fetch(request: Request): Promise<Response> {
@@ -235,7 +244,7 @@ export class PetRoom implements DurableObject {
       server.serializeAttachment({ kind: "companion" });
       server.send(JSON.stringify({ type: "connected", connectedAt: Date.now(), companions: this.ctx.getWebSockets().length }));
       server.send(JSON.stringify({ type: "snapshot", sessions: [...this.sessions.values()] }));
-      for (const approval of this.approvals.values()) if (!approval.decision && approval.expiresAt > Date.now()) server.send(JSON.stringify({ type: "approval_requested", approval }));
+      for (const approval of this.approvals.values()) if (!approval.decision && !approval.cancelledAt && approval.expiresAt > Date.now()) server.send(JSON.stringify({ type: "approval_requested", approval }));
       return new Response(null, { status: 101, webSocket: client });
     }
     if (path === "/status") return json({ companions: this.ctx.getWebSockets().length, checkedAt: Date.now() });
@@ -251,7 +260,7 @@ export class PetRoom implements DurableObject {
     if (path === "/approval/create" && request.method === "POST") {
       const approval = await request.json<Approval>();
       const existing = this.approvals.get(approval.requestId);
-      if (existing) return json({ ok: true, requestId: existing.requestId, state: existing.decision ? "resolved" : "pending", decision: existing.decision });
+      if (existing) return json({ ok: true, requestId: existing.requestId, state: existing.decision ? "resolved" : existing.cancelledAt || existing.expiresAt <= Date.now() ? "expired" : "pending", decision: existing.decision });
       this.approvals.set(approval.requestId, approval);
       await this.ctx.storage.put("approvals", [...this.approvals.entries()]);
       await this.scheduleApprovalAlarm();
@@ -262,41 +271,66 @@ export class PetRoom implements DurableObject {
       const id = new URL(request.url).searchParams.get("id") || "";
       const approval = this.approvals.get(id);
       if (!approval) return json({ error: "approval not found" }, 404);
-      if (!approval.decision && approval.expiresAt <= Date.now()) {
-        approval.decision = "deny";
+      if (!approval.decision && !approval.cancelledAt && approval.expiresAt <= Date.now()) {
+        approval.cancelledAt = approval.expiresAt;
         await this.ctx.storage.put("approvals", [...this.approvals.entries()]);
-        this.broadcast({ type: "approval_resolved", requestId: id, decision: "deny", expired: true });
+        this.broadcast({ type: "approval_resolved", requestId: id, decision: null, cancelled: true, expired: true });
+        await this.scheduleApprovalAlarm();
       }
-      return json({ requestId: id, state: approval.decision ? "resolved" : "pending", decision: approval.decision || null, expiresAt: approval.expiresAt });
+      return json({ requestId: id, state: approval.decision ? "resolved" : approval.cancelledAt ? "expired" : "pending", decision: approval.decision || null });
     }
     if (path === "/approval/decision" && request.method === "POST") {
       const id = new URL(request.url).searchParams.get("id") || "";
       const body = await request.json<{ decision?: "allow" | "deny" }>();
       const approval = this.approvals.get(id);
       if (!approval) return json({ error: "approval not found" }, 404);
-      if (!approval.decision && approval.expiresAt <= Date.now()) approval.decision = "deny";
-      const accepted = !approval.decision;
-      if (accepted) approval.decision = body.decision;
+      const accepted = !approval.decision && !approval.cancelledAt && approval.expiresAt > Date.now();
+      if (accepted) {
+        approval.decision = body.decision;
+        approval.resolvedAt = Date.now();
+      } else if (!approval.decision && !approval.cancelledAt && approval.expiresAt <= Date.now()) {
+        approval.cancelledAt = approval.expiresAt;
+        this.broadcast({ type: "approval_resolved", requestId: id, decision: null, cancelled: true, expired: true });
+      }
       await this.ctx.storage.put("approvals", [...this.approvals.entries()]);
       this.broadcast({ type: "approval_resolved", requestId: id, decision: approval.decision });
       await this.scheduleApprovalAlarm();
-      return json({ ok: true, accepted, decision: approval.decision });
+      return json({ ok: true, accepted, decision: approval.decision, state: approval.decision ? "resolved" : "expired" });
+    }
+    if (path === "/approval/cancel" && request.method === "POST") {
+      const id = new URL(request.url).searchParams.get("id") || "";
+      const approval = this.approvals.get(id);
+      if (!approval) return json({ error: "approval not found" }, 404);
+      const accepted = !approval.decision && !approval.cancelledAt && approval.expiresAt > Date.now();
+      if (accepted) approval.cancelledAt = Date.now();
+      await this.ctx.storage.put("approvals", [...this.approvals.entries()]);
+      if (accepted) this.broadcast({ type: "approval_resolved", requestId: id, decision: null, cancelled: true });
+      await this.scheduleApprovalAlarm();
+      return json({ ok: true, accepted, state: approval.decision ? "resolved" : approval.cancelledAt ? "expired" : "pending", decision: approval.decision || null });
     }
     return new Response("not found", { status: 404 });
   }
   async alarm(): Promise<void> {
     const now = Date.now();
     for (const [id, approval] of this.approvals) {
-      if (!approval.decision && approval.expiresAt <= now) {
-        approval.decision = "deny";
-        this.broadcast({ type: "approval_resolved", requestId: id, decision: "deny", expired: true });
-      } else if (approval.decision && approval.expiresAt + 60_000 <= now) this.approvals.delete(id);
+      if (!approval.decision && !approval.cancelledAt && approval.expiresAt <= now) {
+        approval.cancelledAt = approval.expiresAt;
+        this.broadcast({ type: "approval_resolved", requestId: id, decision: null, cancelled: true, expired: true });
+      } else if ((approval.decision || approval.cancelledAt) && (approval.resolvedAt || approval.cancelledAt || approval.createdAt) + 60_000 <= now) {
+        this.approvals.delete(id);
+      }
     }
     await this.ctx.storage.put("approvals", [...this.approvals.entries()]);
     await this.scheduleApprovalAlarm();
   }
   private async scheduleApprovalAlarm(): Promise<void> {
-    const next = [...this.approvals.values()].map(a => a.decision ? a.expiresAt + 60_000 : a.expiresAt).sort((a, b) => a - b)[0];
+    const next = [...this.approvals.values()]
+      .filter(a => !a.decision && !a.cancelledAt)
+      .map(a => a.expiresAt)
+      .concat([...this.approvals.values()]
+        .filter(a => a.decision || a.cancelledAt)
+        .map(a => (a.resolvedAt || a.cancelledAt || a.createdAt) + 60_000))
+      .sort((a, b) => a - b)[0];
     if (next) await this.ctx.storage.setAlarm(next);
     else await this.ctx.storage.deleteAlarm();
   }

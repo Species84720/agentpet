@@ -302,6 +302,7 @@ class MainActivity : AppCompatActivity() {
         val relay = RelayClient(prefs.getString("endpoint", "") ?: "", prefs.getString("token", "") ?: "", {})
         relay.submitApprovalDecision(requestId, decision) { result -> runOnUiThread {
             if (result == null) Toast.makeText(this, "Could not send approval — check relay connection", Toast.LENGTH_LONG).show()
+            else if (result.optString("state") == "expired") Toast.makeText(this, "Approval window ended — answer in Codex", Toast.LENGTH_LONG).show()
             else if (!result.optBoolean("accepted", true)) Toast.makeText(this, "Already answered: ${result.optString("decision")}", Toast.LENGTH_LONG).show()
             else Toast.makeText(this, if (decision == "allow") "Allowed — Codex will continue" else "Denied — Codex will continue", Toast.LENGTH_SHORT).show()
         } }

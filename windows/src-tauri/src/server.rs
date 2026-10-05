@@ -38,6 +38,14 @@ pub fn resolve_approval(_app: &AppHandle, id: &str, decision: &str) {
     }
 }
 
+/// End the desktop copy of a Codex approval when its hook hands control back to
+/// Codex's native permission prompt. This is a cancellation, never a denial.
+fn cancel_approval(id: &str) {
+    if let Ok(mut map) = pending().lock() {
+        map.remove(id);
+    }
+}
+
 fn cloud_approval_decision(id: &str, decision: &str) -> Option<String> {
     let home = dirs::home_dir()?;
     let config: Value = serde_json::from_slice(&std::fs::read(home.join(".agentpet/cloud-relay.json")).ok()?).ok()?;
@@ -117,9 +125,15 @@ fn handle_approval(app: AppHandle, body: String, req: tiny_http::Request) {
         serde_json::json!({ "id": id, "session": session, "tool": tool, "summary": summary }),
     );
 
-    let timeout = if id.starts_with("codex-") { 185 } else { 10 };
-    let decision = rx.recv_timeout(std::time::Duration::from_secs(timeout))
-        .unwrap_or_else(|_| if id.starts_with("codex-") { "deny".to_string() } else { "ask".to_string() });
+    // Codex gets a three-minute opportunity for a desktop-pet or phone answer.
+    // On timeout, "ask" tells the hook to return no decision so Codex shows its
+    // own local permission prompt. Other configured gates remain user-driven.
+    let decision = if id.starts_with("codex-") {
+        rx.recv_timeout(std::time::Duration::from_secs(180))
+            .unwrap_or_else(|_| "ask".to_string())
+    } else {
+        rx.recv().unwrap_or_else(|_| "ask".to_string())
+    };
     if let Ok(mut map) = pending().lock() {
         map.remove(&id);
     }
@@ -161,6 +175,17 @@ pub fn start(app: AppHandle) {
                 let decision = str_of(&value, "decision").to_string();
                 if id.starts_with("codex-") && (decision == "allow" || decision == "deny") {
                     resolve_approval(&app, &id, &decision);
+                    let _ = req.respond(tiny_http::Response::from_string("ok"));
+                } else {
+                    let _ = req.respond(tiny_http::Response::from_string("invalid approval").with_status_code(400));
+                }
+                continue;
+            }
+            if req.url() == "/cancel" && req.method().as_str() == "POST" {
+                let value: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+                let id = str_of(&value, "id");
+                if id.starts_with("codex-") {
+                    cancel_approval(id);
                     let _ = req.respond(tiny_http::Response::from_string("ok"));
                 } else {
                     let _ = req.respond(tiny_http::Response::from_string("invalid approval").with_status_code(400));
