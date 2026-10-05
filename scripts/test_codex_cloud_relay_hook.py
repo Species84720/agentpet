@@ -1,0 +1,58 @@
+"""Focused regression tests for authenticated Cloudflare approval requests."""
+
+import importlib.util
+import json
+import subprocess
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+
+HOOK_PATH = Path(__file__).with_name("codex-cloud-relay-hook.py")
+SPEC = importlib.util.spec_from_file_location("codex_cloud_relay_hook", HOOK_PATH)
+hook = importlib.util.module_from_spec(SPEC)
+assert SPEC and SPEC.loader
+SPEC.loader.exec_module(hook)
+
+
+class RelayJsonTests(unittest.TestCase):
+    @patch.object(hook.shutil, "which", return_value="/usr/bin/curl")
+    @patch.object(hook.subprocess, "run")
+    def test_posts_json_with_bearer_and_accepts_202(self, run, _which):
+        run.return_value = subprocess.CompletedProcess(
+            [], 0, b'{"ok":true,"requestId":"codex-test-12345678","state":"pending"}\nAGENTPET_HTTP_STATUS:202', b"")
+
+        result = hook.relay_json("https://relay.example/v1/approvals", "secret-token", {
+            "requestId": "codex-test-12345678", "sessionId": "test-session", "toolName": "Test"
+        })
+
+        self.assertEqual(result["state"], "pending")
+        args, kwargs = run.call_args
+        self.assertIn("Authorization: Bearer secret-token", args[0])
+        self.assertIn("--data-binary", args[0])
+        self.assertEqual(json.loads(kwargs["input"])["sessionId"], "test-session")
+
+    @patch.object(hook.shutil, "which", return_value="/usr/bin/curl")
+    @patch.object(hook.subprocess, "run")
+    def test_rejects_http_error_even_when_error_body_is_json(self, run, _which):
+        run.return_value = subprocess.CompletedProcess(
+            [], 0, b'{"error":"agent token required"}\nAGENTPET_HTTP_STATUS:403', b"")
+
+        self.assertIsNone(hook.relay_json("https://relay.example/v1/approvals", "token", {}))
+
+    @patch.object(hook.shutil, "which", return_value="/usr/bin/curl")
+    @patch.object(hook.subprocess, "run")
+    def test_get_reads_the_decision_response(self, run, _which):
+        run.return_value = subprocess.CompletedProcess(
+            [], 0, b'{"requestId":"codex-test-12345678","state":"resolved","decision":"allow"}\nAGENTPET_HTTP_STATUS:200', b"")
+
+        result = hook.relay_json("https://relay.example/v1/approvals/codex-test-12345678", "token")
+
+        self.assertEqual(result["decision"], "allow")
+        args, kwargs = run.call_args
+        self.assertNotIn("--data-binary", args[0])
+        self.assertIsNone(kwargs["input"])
+
+
+if __name__ == "__main__":
+    unittest.main()

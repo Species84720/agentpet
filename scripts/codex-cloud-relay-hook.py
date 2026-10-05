@@ -45,16 +45,50 @@ def post(curl: str, url: str, token: str, body: dict) -> bool:
         return False
 
 
-def relay_json(url: str, token: str, body: dict | None = None, timeout: float = 2) -> dict | None:
+def relay_json(url: str, token: str, body: dict | None = None, timeout: float = 2,
+               report_errors: bool = False) -> dict | None:
+    """Call the public relay through curl, matching the working event uploader.
+
+    urllib's default User-Agent is rejected by the deployed Cloudflare edge
+    (HTTP 403 / error 1010), which made approvals silently stay local while
+    event mirroring continued to work.
+    """
+    curl = shutil.which("curl")
+    if not curl:
+        if report_errors:
+            print("AgentPet: curl is unavailable; Cloudflare approvals cannot be relayed.", file=sys.stderr, flush=True)
+        return None
     data = json.dumps(body).encode("utf-8") if body is not None else None
-    request = urllib.request.Request(url, data=data, method="POST" if data is not None else "GET")
-    request.add_header("Authorization", "Bearer " + token)
+    args = [curl, "--silent", "--show-error", "--max-time", str(timeout),
+            "--write-out", "\nAGENTPET_HTTP_STATUS:%{http_code}",
+            "--header", "Authorization: Bearer " + token]
     if data is not None:
-        request.add_header("Content-Type", "application/json")
+        args.extend(["--request", "POST", "--header", "Content-Type: application/json",
+                     "--data-binary", "@-"])
+    args.append(url)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except (OSError, ValueError, urllib.error.URLError):
+        response = subprocess.run(args, input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                  timeout=timeout + 0.5, check=False)
+        output = response.stdout.decode("utf-8") if isinstance(response.stdout, bytes) else response.stdout
+        payload, marker, status_text = output.rpartition("\nAGENTPET_HTTP_STATUS:")
+        if response.returncode != 0 or not marker or not status_text.isdigit():
+            if report_errors:
+                print("AgentPet: Cloudflare approval request failed at the network layer.", file=sys.stderr, flush=True)
+            return None
+        if not 200 <= int(status_text) < 300:
+            if report_errors:
+                try:
+                    detail = json.loads(payload).get("error", "")
+                except (AttributeError, ValueError):
+                    detail = ""
+                suffix = f": {detail}" if detail else ""
+                print(f"AgentPet: Cloudflare approval request returned HTTP {status_text}{suffix}.",
+                      file=sys.stderr, flush=True)
+            return None
+        return json.loads(payload)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        if report_errors:
+            print("AgentPet: Cloudflare approval request could not be completed.", file=sys.stderr, flush=True)
         return None
 
 
@@ -92,7 +126,11 @@ def local_cancel(request_id: str) -> None:
 
 
 def ensure_relay_approval(base_url: str, token: str, approval: dict) -> None:
-    while relay_json(base_url + "/v1/approvals", token, approval, timeout=3) is None:
+    while True:
+        result = relay_json(base_url + "/v1/approvals", token, approval, timeout=3, report_errors=True)
+        if result and result.get("requestId") == approval["requestId"] \
+                and result.get("state") in ("pending", "resolved", "expired"):
+            return
         print("AgentPet: approval relay unavailable; request remains pending and will retry.", file=sys.stderr, flush=True)
         time.sleep(5)
 

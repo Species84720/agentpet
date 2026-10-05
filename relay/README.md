@@ -25,6 +25,11 @@ All authenticated endpoints use `Authorization: Bearer <device-token>`.
 | `POST /v1/devices` | bootstrap secret | Mint an `agent` or `companion` device token |
 | `POST /v1/events` | agent | Persist and broadcast an AgentEvent |
 | `POST /v1/care-deltas` | agent | Queue an idempotent transcript token increment for Android |
+| `POST /v1/approvals` | agent | Create a one-minute approval request for paired companions |
+| `GET /v1/approvals` | companion | List pending approval requests |
+| `GET /v1/approvals/{id}` | agent | Read an approval decision |
+| `POST /v1/approvals/{id}/decision` | paired device | Submit the first allow/deny decision |
+| `POST /v1/approvals/{id}/cancel` | paired device | Cancel a request without deciding it |
 | `GET /v1/android-care` | companion | Read saved Android care and pending token increments |
 | `POST /v1/android-care/consume` | companion | Atomically save care and acknowledge applied increments |
 | `GET/PUT /v1/profile` | any device | Read/update shared pet settings (optimistic `version`) |
@@ -36,6 +41,12 @@ The Worker automatically prunes event rows older than `LOG_RETENTION_DAYS`
 (30 by default) on ingestion. `DELETE /v1/logs` is intentionally separate from
 the pet profile and the current live session snapshot, so a user can reclaim
 history storage without resetting their Tamagotchi.
+
+Agent and companion device tokens must be minted with the same `userId`; the
+Worker uses that ID to select the Durable Object room. A companion can report
+`Inbox reachable` while still looking at a different room if its token was
+paired to another `userId`. Approval requests expire after 60 seconds, so
+respond promptly.
 
 For live updates, connect `wss://<relay>/v1/live` with the companion token in
 the `Authorization: Bearer` handshake header. The first frame is a
@@ -52,8 +63,10 @@ Create `~/.agentpet/cloud-relay.json` on each desktop that emits events:
 { "url": "https://relay.example.com", "token": "AGENT_DEVICE_TOKEN" }
 ```
 
-Existing hooks continue to write to the local desktop socket first and then make
-a bounded, fail-open mirror request to the relay. A cloud outage therefore
-never blocks an agent. Approval-gated events intentionally stay local in this
-first version; remote approval requires a separate, authenticated blocking
-round trip.
+Existing hooks continue to write to the local desktop socket and mirror events
+to the relay. Codex permission requests are registered in the Cloudflare room
+with the agent token, then race the desktop pet against Android for up to 60
+seconds; the first allow/deny decision wins. The hook uses `curl` for all
+Cloudflare approval calls because the deployed edge rejects Python `urllib`
+requests (HTTP 403, error 1010). A relay outage still leaves the desktop pet
+and Codex's native permission prompt available.
