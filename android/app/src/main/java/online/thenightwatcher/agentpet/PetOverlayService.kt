@@ -170,9 +170,20 @@ class PetOverlayService : Service() {
     }
     private fun syncPendingApprovals() {
         val relay = client ?: return
-        relay.fetchPendingApprovals { approvals ->
-            if (approvals == null) return@fetchPendingApprovals
+        relay.fetchPendingApprovals { approvals, error ->
+            if (approvals == null) {
+                Handler(mainLooper).post {
+                    getSharedPreferences("relay", MODE_PRIVATE).edit()
+                        .putString("approval_poll_status", error ?: "Could not load approval requests")
+                        .apply()
+                    sendBroadcast(Intent(ACTION_APPROVALS_UPDATED).setPackage(packageName))
+                }
+                return@fetchPendingApprovals
+            }
             Handler(mainLooper).post {
+                getSharedPreferences("relay", MODE_PRIVATE).edit()
+                    .putString("approval_poll_status", "Inbox reachable · checked just now")
+                    .apply()
                 val activeIds = approvals.map { it.optString("requestId") }.filter(String::isNotBlank).toSet()
                 pendingApprovals.keys.filterNot(activeIds::contains).toList().forEach { id ->
                     pendingApprovals.remove(id)

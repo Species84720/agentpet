@@ -90,15 +90,22 @@ class RelayClient(
         })
     }
 
-    fun fetchPendingApprovals(onComplete: (List<JSONObject>?) -> Unit) {
+    fun fetchPendingApprovals(onComplete: (List<JSONObject>?, String?) -> Unit) {
         val request = Request.Builder().url(endpoint.removeSuffix("/") + "/v1/approvals")
             .header("Authorization", "Bearer $token").build()
         client.newCall(request).enqueue(object : Callback {
-            override fun onFailure(call: Call, e: java.io.IOException) = onComplete(null)
+            override fun onFailure(call: Call, e: java.io.IOException) = onComplete(null, e.message ?: "Network request failed")
             override fun onResponse(call: Call, response: Response) = response.use {
-                val approvals = runCatching { JSONObject(it.body?.string() ?: "{}").optJSONArray("approvals") }
-                    .getOrNull()?.let { array -> (0 until array.length()).mapNotNull(array::optJSONObject) }
-                onComplete(if (it.isSuccessful) approvals else null)
+                val body = it.body?.string().orEmpty()
+                if (!it.isSuccessful) {
+                    val reason = runCatching { JSONObject(body).optString("error") }.getOrNull().orEmpty()
+                    onComplete(null, "HTTP ${it.code}${if (reason.isBlank()) "" else ": $reason"}")
+                } else {
+                    val approvals = runCatching { JSONObject(body).optJSONArray("approvals") }
+                        .getOrNull()?.let { array -> (0 until array.length()).mapNotNull(array::optJSONObject) }
+                    if (approvals == null) onComplete(null, "Relay returned an invalid approval list")
+                    else onComplete(approvals, null)
+                }
             }
         })
     }

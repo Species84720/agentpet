@@ -8,6 +8,8 @@ import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.view.Gravity
 import android.widget.*
@@ -30,6 +32,18 @@ class MainActivity : AppCompatActivity() {
     private var updateStatus: TextView? = null
     private var inputList: LinearLayout? = null
     private var inputConnection: TextView? = null
+    private var inputRequestStatus: String? = null
+    private var liveApprovals: List<org.json.JSONObject>? = null
+    private var inputRelayClient: RelayClient? = null
+    private var inputRelayEndpoint: String? = null
+    private var inputRelayToken: String? = null
+    private val inputRefreshHandler = Handler(Looper.getMainLooper())
+    private val inputRefreshTask = object : Runnable {
+        override fun run() {
+            refreshApprovalRequests()
+            inputRefreshHandler.postDelayed(this, 3_000)
+        }
+    }
     private var openTab: ((Int) -> Unit)? = null
     private val inputTabIndex = 2
     private val statusReceiver = object : BroadcastReceiver() {
@@ -222,6 +236,10 @@ class MainActivity : AppCompatActivity() {
         inputsPage.addView(TextView(this).apply { text = "Requests waiting for your decision"; textSize = 20f; setTypeface(typeface, android.graphics.Typeface.BOLD); setTextColor(Color.rgb(143, 221, 104)); setPadding(0, 8, 0, 8) })
         inputConnection = TextView(this).apply { setTextColor(Color.LTGRAY); setPadding(0, 0, 0, 12) }
         inputsPage.addView(inputConnection)
+        inputsPage.addView(Button(this).apply {
+            text = "Refresh requests now"
+            setOnClickListener { refreshApprovalRequests() }
+        })
         inputList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         inputsPage.addView(inputList)
         var target = petPage
@@ -308,19 +326,59 @@ class MainActivity : AppCompatActivity() {
             else Toast.makeText(this, if (decision == "allow") "Allowed — Codex will continue" else "Denied — Codex will continue", Toast.LENGTH_SHORT).show()
             if (result != null && (result.optBoolean("accepted") || result.optString("state") == "expired")) {
                 ApprovalInbox.remove(this, requestId)
-                refreshInputs()
+                refreshApprovalRequests()
             }
+        } }
+    }
+    private fun refreshApprovalRequests() {
+        val prefs = getSharedPreferences("relay", MODE_PRIVATE)
+        val endpoint = prefs.getString("endpoint", "") ?: ""
+        val token = prefs.getString("token", "") ?: ""
+        if (endpoint.isBlank() || token.isBlank()) {
+            inputRelayClient?.close()
+            inputRelayClient = null
+            inputRelayEndpoint = endpoint
+            inputRelayToken = token
+            inputRequestStatus = "Relay URL or companion token is missing"
+            liveApprovals = null
+            refreshInputs()
+            return
+        }
+        if (inputRelayClient == null || inputRelayEndpoint != endpoint || inputRelayToken != token) {
+            inputRelayClient?.close()
+            inputRelayEndpoint = endpoint
+            inputRelayToken = token
+            inputRelayClient = RelayClient(endpoint, token, {})
+        }
+        val relay = inputRelayClient ?: return
+        inputRequestStatus = "Checking Cloudflare approval inbox…"
+        refreshInputs()
+        relay.fetchPendingApprovals { approvals, error -> runOnUiThread {
+            if (isFinishing || isDestroyed) return@runOnUiThread
+            inputRequestStatus = error ?: "Inbox reachable · checked just now"
+            if (approvals != null) {
+                liveApprovals = approvals
+                val activeIds = approvals.map { it.optString("requestId") }.filter(String::isNotBlank).toSet()
+                ApprovalInbox.all(this).map { it.optString("requestId") }.filterNot(activeIds::contains).forEach { ApprovalInbox.remove(this, it) }
+                approvals.forEach { ApprovalInbox.put(this, it) }
+            }
+            refreshInputs()
         } }
     }
     private fun refreshInputs() {
         val host = inputList ?: return
         host.removeAllViews()
         val connected = getSharedPreferences("relay", MODE_PRIVATE).getString("connection_status", "Not connected") ?: "Not connected"
-        inputConnection?.text = "Relay: $connected"
-        val approvals = ApprovalInbox.all(this)
+        val status = inputRequestStatus ?: getSharedPreferences("relay", MODE_PRIVATE).getString("approval_poll_status", "Not checked yet")
+        val pollFailed = status?.startsWith("HTTP ") == true || listOf("failed", "missing", "invalid").any { status?.contains(it, true) == true }
+        inputConnection?.text = "Relay: $connected\nApprovals: $status"
+        inputConnection?.setTextColor(if (pollFailed) Color.rgb(255, 130, 120) else Color.LTGRAY)
+        val approvals = liveApprovals ?: ApprovalInbox.all(this)
         if (approvals.isEmpty()) {
             host.addView(TextView(this).apply {
-                text = "No pending requests. Keep the floating pet connected; incoming requests will appear here with their session, project, and tool details."
+                text = if (pollFailed)
+                    "Could not load requests: $status\nCheck the companion token and relay URL above."
+                else "No pending requests. This inbox polls Cloudflare while the tab is open; use Refresh requests now to check immediately."
                 setTextColor(Color.LTGRAY); textSize = 15f; setPadding(16, 18, 16, 18); background = panelBackground()
             })
             return
@@ -360,6 +418,11 @@ class MainActivity : AppCompatActivity() {
         ContextCompat.registerReceiver(this, statusReceiver, IntentFilter().apply { addAction(PetOverlayService.ACTION_RELAY_STATUS); addAction(PetOverlayService.ACTION_CARE_UPDATED); addAction(PetOverlayService.ACTION_APPROVALS_UPDATED) }, ContextCompat.RECEIVER_NOT_EXPORTED)
         if (::overlayStatus.isInitialized) showOverlayStatus()
         refreshInputs()
+        inputRelayClient?.close()
+        inputRelayClient = null
+        inputRefreshHandler.removeCallbacks(inputRefreshTask)
+        refreshApprovalRequests()
+        inputRefreshHandler.postDelayed(inputRefreshTask, 3_000)
     }
     override fun onResume() {
         super.onResume()
@@ -375,7 +438,13 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
-    override fun onStop() { unregisterReceiver(statusReceiver); super.onStop() }
+    override fun onStop() {
+        inputRefreshHandler.removeCallbacks(inputRefreshTask)
+        inputRelayClient?.close()
+        inputRelayClient = null
+        unregisterReceiver(statusReceiver)
+        super.onStop()
+    }
     private fun checkForUpdates(force: Boolean, showPrompt: Boolean = true) {
         val prefs = getSharedPreferences("relay", MODE_PRIVATE)
         val now = System.currentTimeMillis()

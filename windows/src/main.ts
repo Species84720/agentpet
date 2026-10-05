@@ -440,6 +440,9 @@ canvas.addEventListener("mousedown", async (e) => {
 });
 bubbleEl.addEventListener("mousedown", async (e) => {
   if (e.button !== 0) return;
+  // Approval controls live inside the bubble: don't start dragging the window
+  // when the user presses one, or its subsequent click will be swallowed.
+  if ((e.target as HTMLElement).closest("button, a, input, textarea, select")) return;
   emit("popover-close", null);
   await getCurrentWindow().startDragging();
 });
