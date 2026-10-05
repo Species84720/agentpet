@@ -13,14 +13,25 @@ import java.util.concurrent.ConcurrentHashMap
 /** Rasterizes the same checked-in agent SVG marks for compact Android bubbles. */
 object AgentLogos {
     private val cache = ConcurrentHashMap<String, Bitmap>()
-    private val pathTag = Regex("(?is)<path\\b([^>]*)>")
+    private val shapeTag = Regex("(?is)<(path|rect|circle|ellipse)\\b([^>]*)/?>")
     private val attr = Regex("([\\w-]+)\\s*=\\s*['\"]([^'\"]*)['\"]")
 
     fun bitmap(context: Context, rawKind: String, requestedSize: Int): Bitmap? {
-        val kind = when (rawKind.lowercase()) { "claude" -> "claude-code"; "kirocli" -> "kiro"; else -> rawKind.lowercase() }
+        val normalized = rawKind.trim().lowercase().replace("_", "").replace("-", "")
+        val kind = when (normalized) {
+            "claude", "claudecode" -> "claude-code"
+            "kiro", "kirocli" -> "kiro"
+            "githubcopilot" -> "copilot"
+            else -> normalized
+        }
         val size = requestedSize.coerceIn(20, 96)
         val key = "$kind:$size"
-        return cache[key] ?: runCatching { render(context, kind, size) }.getOrNull()?.also { cache[key] = it }
+        return cache[key] ?: runCatching { render(context, kind, size) }
+            .getOrElse {
+                Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888).also { fallback ->
+                    drawFallback(Canvas(fallback), Paint(Paint.ANTI_ALIAS_FLAG), kind, size)
+                }
+            }.also { cache[key] = it }
     }
 
     private fun render(context: Context, kind: String, size: Int): Bitmap {
@@ -41,16 +52,32 @@ object AgentLogos {
         canvas.translate((size - viewWidth * scale) / 2f, (size - viewHeight * scale) / 2f)
         canvas.scale(scale, scale)
         var rendered = false
-        for (match in pathTag.findAll(svg)) {
-            val attributes = attr.findAll(match.groupValues[1]).associate { it.groupValues[1] to it.groupValues[2] }
-            val data = attributes["d"] ?: continue
-            val path = PathParser.createPathFromPathData(data) ?: continue
+        for (match in shapeTag.findAll(svg)) {
+            val attributes = attr.findAll(match.groupValues[2]).associate { it.groupValues[1] to it.groupValues[2] }
             val fill = attributes["fill"]
             val stroke = attributes["stroke"]
+            paint.color = parseColor(fill) ?: Color.WHITE
+            val shape = when (match.groupValues[1].lowercase()) {
+                "path" -> attributes["d"]?.let { runCatching { PathParser.createPathFromPathData(it) }.getOrNull() }
+                "rect" -> {
+                    val left = attributes["x"]?.toFloatOrNull() ?: 0f
+                    val top = attributes["y"]?.toFloatOrNull() ?: 0f
+                    val right = left + (attributes["width"]?.toFloatOrNull() ?: 0f)
+                    val bottom = top + (attributes["height"]?.toFloatOrNull() ?: 0f)
+                    Path().apply { addRoundRect(RectF(left, top, right, bottom), attributes["rx"]?.toFloatOrNull() ?: 0f, attributes["ry"]?.toFloatOrNull() ?: 0f, Path.Direction.CW) }
+                }
+                "circle", "ellipse" -> {
+                    val cx = attributes["cx"]?.toFloatOrNull() ?: 0f
+                    val cy = attributes["cy"]?.toFloatOrNull() ?: 0f
+                    val rx = (attributes[if (match.groupValues[1].equals("circle", true)) "r" else "rx"]?.toFloatOrNull() ?: 0f)
+                    val ry = (attributes[if (match.groupValues[1].equals("circle", true)) "r" else "ry"]?.toFloatOrNull() ?: rx)
+                    Path().apply { addOval(RectF(cx - rx, cy - ry, cx + rx, cy + ry), Path.Direction.CW) }
+                }
+                else -> null
+            } ?: continue
             if (fill != "none") {
                 paint.style = Paint.Style.FILL
-                paint.color = parseColor(fill) ?: Color.WHITE
-                canvas.drawPath(path, paint)
+                canvas.drawPath(shape, paint)
                 rendered = true
             } else if (stroke != null) {
                 paint.style = Paint.Style.STROKE
@@ -58,7 +85,7 @@ object AgentLogos {
                 paint.strokeCap = Paint.Cap.ROUND
                 paint.strokeJoin = Paint.Join.ROUND
                 paint.color = parseColor(stroke) ?: Color.WHITE
-                canvas.drawPath(path, paint)
+                canvas.drawPath(shape, paint)
                 rendered = true
             }
         }

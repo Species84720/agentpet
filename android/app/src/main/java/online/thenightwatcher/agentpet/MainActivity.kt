@@ -35,8 +35,21 @@ class MainActivity : AppCompatActivity() {
             root.addView(TextView(this).apply { text = label; setTextColor(Color.WHITE) })
             root.addView(Spinner(this).apply { adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, values.map { it.replace('_', ' ') }); setSelection(values.indexOf(prefs.getString(key, default)).coerceAtLeast(0)); onItemSelectedListener = object : AdapterView.OnItemSelectedListener { override fun onNothingSelected(p: AdapterView<*>?) = Unit; override fun onItemSelected(p: AdapterView<*>?, v: android.view.View?, pos: Int, id: Long) { prefs.edit().putString(key, values[pos]).apply() } } })
         }
-        root.addView(TextView(this).apply { text = "AgentPet"; textSize = 28f; setTypeface(typeface, android.graphics.Typeface.BOLD); setTextColor(Color.WHITE) })
-        root.addView(TextView(this).apply { text = "Your little coding companion"; setTextColor(Color.LTGRAY); setPadding(0, 2, 0, 12) })
+        root.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, 12)
+            addView(ImageView(this@MainActivity).apply {
+                setImageResource(R.drawable.ic_agentpet)
+                contentDescription = "AgentPet logo"
+                scaleType = ImageView.ScaleType.CENTER_CROP
+            }, LinearLayout.LayoutParams(56, 56).apply { marginEnd = 14 })
+            addView(LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(TextView(this@MainActivity).apply { text = "AgentPet"; textSize = 28f; setTypeface(typeface, android.graphics.Typeface.BOLD); setTextColor(Color.WHITE) })
+                addView(TextView(this@MainActivity).apply { text = "Your little coding companion"; setTextColor(Color.LTGRAY); setPadding(0, 2, 0, 0) })
+            })
+        })
         overlayStatus = TextView(this).apply { textSize = 14f; setPadding(16, 14, 16, 14); background = panelBackground() }
         root.addView(overlayStatus)
         val endpoint = EditText(this).apply { hint = "https://relay.example.com"; setText(prefs.getString("endpoint", "")) }

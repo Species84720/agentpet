@@ -1,0 +1,6 @@
+<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+  <title>GitHub Copilot</title>
+  <rect x="4" y="6.5" width="16" height="12.5" rx="6.25" fill="#1f2328"/>
+  <circle cx="9" cy="12.75" r="1.7" fill="#ffffff"/>
+  <circle cx="15" cy="12.75" r="1.7" fill="#ffffff"/>
+</svg>

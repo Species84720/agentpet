@@ -371,10 +371,14 @@ class PetOverlayService : Service() {
         val kind = event.optString("agentKind", "unknown").lowercase()
         val project = event.optString("project").trim().trimEnd('/', '\\')
             .substringAfterLast('/').substringAfterLast('\\').ifBlank { "Agent session" }
-        val line = SpannableStringBuilder("  $project · $message")
+        // An object-replacement character gives ImageSpan a real glyph slot;
+        // using a leading whitespace character can be collapsed/clipped by
+        // TextView layout and made the agent marks appear to be missing.
+        val line = SpannableStringBuilder("\uFFFC  $project · $message")
         val icon = AgentLogos.bitmap(this, kind, (bubble?.textSize ?: 14f).toInt().coerceAtLeast(14))
         if (icon != null) {
-            val drawable = BitmapDrawable(resources, icon).apply { setBounds(0, 0, icon.width, icon.height) }
+            val iconSize = (bubble?.textSize ?: 14f).toInt().coerceAtLeast(14)
+            val drawable = BitmapDrawable(resources, icon).apply { setBounds(0, 0, iconSize, iconSize) }
             line.setSpan(ImageSpan(drawable, ImageSpan.ALIGN_CENTER), 0, 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         }
         return line
