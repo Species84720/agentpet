@@ -29,7 +29,10 @@ class PetOverlayService : Service() {
         const val ACTION_PET_CHANGED = "online.thenightwatcher.agentpet.PET_CHANGED"
         const val EXTRA_RELAY_STATUS = "status"
         private const val DONE_SESSION_IDLE_MS = 3_000L
+        // Match desktop SessionStore's staleActiveAfter policy.
+        private const val ACTIVE_SESSION_STALE_MS = 5 * 60 * 1_000L
         private const val IDLE_SESSION_REMOVE_MS = 10 * 60 * 1_000L
+        private const val SESSION_SWEEP_INTERVAL_MS = 15_000L
     }
     private lateinit var windowManager: WindowManager
     private var overlay: FrameLayout? = null
@@ -40,6 +43,15 @@ class PetOverlayService : Service() {
     private val reconnectHandler = Handler(Looper.getMainLooper())
     private val reconnect = Runnable { connect() }
     private val doneResetRunnables = mutableMapOf<String, Runnable>()
+    private val sessionExpiry = object : Runnable {
+        override fun run() {
+            if (pruneSessions()) {
+                sessions.values.maxByOrNull(::eventTimeMs)?.let(::renderEvent)
+                    ?: run { sprite?.setMood("idle"); bubble?.text = "Ready to help" }
+            }
+            reconnectHandler.postDelayed(this, SESSION_SWEEP_INTERVAL_MS)
+        }
+    }
     private var careSyncing = false
     private val settingsReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) { if (intent?.action == ACTION_PET_CHANGED) loadSelectedPet() }
@@ -47,6 +59,7 @@ class PetOverlayService : Service() {
     override fun onCreate() {
         super.onCreate()
         ContextCompat.registerReceiver(this, settingsReceiver, IntentFilter(ACTION_PET_CHANGED), ContextCompat.RECEIVER_NOT_EXPORTED)
+        reconnectHandler.postDelayed(sessionExpiry, SESSION_SWEEP_INTERVAL_MS)
     }
     private var x = 0; private var y = 180
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -176,21 +189,26 @@ class PetOverlayService : Service() {
         pruneSessions()
         renderEvent(event)
     }
-    private fun pruneSessions() {
+    private fun pruneSessions(): Boolean {
         val now = System.currentTimeMillis()
         val remove = sessions.filterValues { session ->
             val age = (now - eventTimeMs(session)).coerceAtLeast(0L)
             when (moodFor(session)) {
-                // Preserve active work across quiet periods/reconnects. A new
-                // terminal hook event, not elapsed wall time, ends the state.
-                "working", "waiting" -> false
+                // A quiet/stuck hook session must not permanently mask the
+                // currently active agent in the pet or multi-agent bubble.
+                "working", "waiting" -> age > ACTIVE_SESSION_STALE_MS
                 else -> age > IDLE_SESSION_REMOVE_MS
             }
         }.keys
         remove.forEach(sessions::remove)
+        var changed = remove.isNotEmpty()
         sessions.values.forEach { session ->
-            if (moodFor(session) == "done" && eventAgeMs(session) > DONE_SESSION_IDLE_MS) session.put("_agentpetMood", "idle")
+            if (moodFor(session) == "done" && eventAgeMs(session) > DONE_SESSION_IDLE_MS) {
+                session.put("_agentpetMood", "idle")
+                changed = true
+            }
         }
+        return changed
     }
     private fun syncRequestHistory() {
         val relay = client ?: return
