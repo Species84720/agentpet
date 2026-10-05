@@ -28,7 +28,7 @@ class PetOverlayService : Service() {
         const val ACTION_CARE_UPDATED = "online.thenightwatcher.agentpet.CARE_UPDATED"
         const val ACTION_PET_CHANGED = "online.thenightwatcher.agentpet.PET_CHANGED"
         const val EXTRA_RELAY_STATUS = "status"
-        private const val DONE_SESSION_IDLE_MS = 30_000L
+        private const val DONE_SESSION_IDLE_MS = 3_000L
         private const val IDLE_SESSION_REMOVE_MS = 10 * 60 * 1_000L
     }
     private lateinit var windowManager: WindowManager
@@ -39,6 +39,7 @@ class PetOverlayService : Service() {
     private val sessions = linkedMapOf<String, JSONObject>()
     private val reconnectHandler = Handler(Looper.getMainLooper())
     private val reconnect = Runnable { connect() }
+    private val doneResetRunnables = mutableMapOf<String, Runnable>()
     private var careSyncing = false
     private val settingsReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) { if (intent?.action == ACTION_PET_CHANGED) loadSelectedPet() }
@@ -64,7 +65,7 @@ class PetOverlayService : Service() {
         return START_STICKY
     }
     override fun onBind(intent: Intent?): IBinder? = null
-    override fun onDestroy() { reconnectHandler.removeCallbacksAndMessages(null); client?.close(); unregisterReceiver(settingsReceiver); overlay?.let { windowManager.removeView(it) }; overlay = null; super.onDestroy() }
+    override fun onDestroy() { reconnectHandler.removeCallbacksAndMessages(null); doneResetRunnables.clear(); client?.close(); unregisterReceiver(settingsReceiver); overlay?.let { windowManager.removeView(it) }; overlay = null; super.onDestroy() }
     private fun notification(): Notification {
         val channel = NotificationChannel("agentpet", "AgentPet companion", NotificationManager.IMPORTANCE_LOW)
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
@@ -157,6 +158,7 @@ class PetOverlayService : Service() {
                 e.optString("sessionId").takeIf(String::isNotBlank)?.let {
                     if (moodFor(e) == "done" && eventAgeMs(e) > DONE_SESSION_IDLE_MS) e.put("_agentpetMood", "idle")
                     sessions[it] = e
+                    scheduleDoneReset(e)
                 }
             }
             pruneSessions()
@@ -165,6 +167,7 @@ class PetOverlayService : Service() {
         }
         val event = frame.optJSONObject("event") ?: return@post
         event.optString("sessionId").takeIf(String::isNotBlank)?.let { sessions[it] = event }
+        scheduleDoneReset(event)
         val careChanged = MobilePetCare.recordEvent(this, event, frame.optString("id"))
         if (careChanged) {
             sendBroadcast(Intent(ACTION_CARE_UPDATED).setPackage(packageName))
@@ -286,6 +289,22 @@ class PetOverlayService : Service() {
         return runCatching { java.time.Instant.parse(string).toEpochMilli() }.getOrDefault(event.optLong("storedAt", 0L))
     }
     private fun eventAgeMs(event: JSONObject): Long = (System.currentTimeMillis() - eventTimeMs(event)).coerceAtLeast(0L)
+    private fun scheduleDoneReset(event: JSONObject) {
+        val sessionId = event.optString("sessionId").takeIf(String::isNotBlank) ?: return
+        doneResetRunnables.remove(sessionId)?.let(reconnectHandler::removeCallbacks)
+        if (moodFor(event) != "done") return
+        val completedAt = eventTimeMs(event)
+        val settle = Runnable {
+            doneResetRunnables.remove(sessionId)
+            val latest = sessions[sessionId] ?: return@Runnable
+            if (moodFor(latest) != "done" || eventTimeMs(latest) != completedAt) return@Runnable
+            latest.put("_agentpetMood", "idle")
+            pruneSessions()
+            sessions.values.maxByOrNull(::eventTimeMs)?.let(::renderEvent)
+        }
+        doneResetRunnables[sessionId] = settle
+        reconnectHandler.postDelayed(settle, (DONE_SESSION_IDLE_MS - eventAgeMs(event)).coerceAtLeast(0L))
+    }
     /** Match desktop behavior: any still-working session keeps the pet animated,
      * even if a newer event from another agent has already completed. */
     private fun aggregateMood(): String = when {
@@ -299,7 +318,9 @@ class PetOverlayService : Service() {
         val mood = moodFor(event)
         sprite?.setMood(aggregateMood())
         val reactive = if (prefs.getBoolean("reactive_bubbles", true)) ActivityPhrases.message(event, prefs.getString("activity_theme", "chef") ?: "chef") else null
-        val message = prefs.getString("message_$mood", "")?.trim().orEmpty().ifBlank { event.optString("message").trim().ifBlank { reactive.orEmpty() } }.ifBlank {
+        val message = prefs.getString("message_$mood", "")?.trim().orEmpty().ifBlank {
+            if (mood == "idle") "Ready to help" else event.optString("message").trim().ifBlank { reactive.orEmpty() }
+        }.ifBlank {
             when (mood) { "waiting" -> "I need your input"; "done" -> "All done!"; "idle" -> "Ready to help"; else -> "Working on it…" }
         }
         if (!prefs.getBoolean("multi_agent_bubble", true)) { bubble?.text = bubbleLine(event, mood, message); return }
@@ -330,11 +351,9 @@ class PetOverlayService : Service() {
 
     private fun bubbleLine(event: JSONObject, mood: String, message: String): CharSequence {
         val kind = event.optString("agentKind", "unknown").lowercase()
-        val agent = event.optString("agentName").takeIf { it.isNotBlank() }
-            ?: kind.replaceFirstChar { it.uppercase() }
         val project = event.optString("project").trim().trimEnd('/', '\\')
             .substringAfterLast('/').substringAfterLast('\\').ifBlank { "Agent session" }
-        val line = SpannableStringBuilder("  $agent · $project · $message")
+        val line = SpannableStringBuilder("  $project · $message")
         val icon = AgentLogos.bitmap(this, kind, (bubble?.textSize ?: 14f).toInt().coerceAtLeast(14))
         if (icon != null) {
             val drawable = BitmapDrawable(resources, icon).apply { setBounds(0, 0, icon.width, icon.height) }

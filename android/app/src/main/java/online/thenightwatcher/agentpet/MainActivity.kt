@@ -52,7 +52,7 @@ class MainActivity : AppCompatActivity() {
         root.addView(petLabel); root.addView(petSearch); root.addView(pets)
         val petPreview = PetSpriteView(this).apply { configureAnimation(true, 6) }
         val previewName = TextView(this).apply { text = prefs.getString("pet_name", "Choose a pet") ?: "Choose a pet"; textSize = 18f; setTypeface(typeface, android.graphics.Typeface.BOLD); setTextColor(Color.WHITE); gravity = Gravity.CENTER }
-        val previewCaption = TextView(this).apply { text = "Live animated preview"; setTextColor(Color.LTGRAY); textSize = 13f; gravity = Gravity.CENTER }
+        val previewCaption = TextView(this).apply { text = "Choose a mood and clip below to preview it"; setTextColor(Color.LTGRAY); textSize = 13f; gravity = Gravity.CENTER }
         val previewCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; setPadding(16, 12, 16, 16); background = panelBackground()
             addView(previewCaption)
@@ -83,7 +83,7 @@ class MainActivity : AppCompatActivity() {
                     prefs.edit().putString("pet_sheet", selected.spritesheetUrl).putString("pet_name", selected.name).putString("pet_slug", selected.slug).apply()
                     petLabel.text = "Selected pet: ${selected.name} (${selected.slug})\n${displayed.size} shown of ${allPets.size}"
                     previewName.text = selected.name
-                    petPreview.load(selected.spritesheetUrl) { loaded -> if (!loaded) previewCaption.text = "Preview could not be loaded" else previewCaption.text = "Live animated preview" }
+                    petPreview.load(selected.spritesheetUrl) { loaded -> if (!loaded) previewCaption.text = "Preview could not be loaded" }
                     sendBroadcast(Intent(PetOverlayService.ACTION_PET_CHANGED).setPackage(packageName))
                 }
             }
@@ -112,9 +112,21 @@ class MainActivity : AppCompatActivity() {
         val moods = listOf("idle", "working", "waiting", "done", "celebrate", "sleepy")
         val moodPicker = Spinner(this).apply { adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, moods) }
         val clipPicker = Spinner(this).apply { adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, (0..8).map { "Clip $it" }) }
-        fun syncClip() { clipPicker.setSelection(prefs.getInt("clip_${moods[moodPicker.selectedItemPosition]}", moods.indexOf(moods[moodPicker.selectedItemPosition])).coerceIn(0, 8)) }
-        moodPicker.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener { override fun onNothingSelected(p: android.widget.AdapterView<*>?) = Unit; override fun onItemSelected(p: android.widget.AdapterView<*>?, v: android.view.View?, pos: Int, id: Long) = syncClip() }
-        clipPicker.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener { override fun onNothingSelected(p: android.widget.AdapterView<*>?) = Unit; override fun onItemSelected(p: android.widget.AdapterView<*>?, v: android.view.View?, pos: Int, id: Long) { prefs.edit().putInt("clip_${moods[moodPicker.selectedItemPosition]}", pos).apply() } }
+        fun previewSelectedClip() {
+            val mood = moods.getOrElse(moodPicker.selectedItemPosition) { "idle" }
+            val bindings = moods.associateWith { prefs.getInt("clip_$it", moods.indexOf(it)) }.toMutableMap()
+            bindings[mood] = clipPicker.selectedItemPosition.coerceIn(0, 8)
+            petPreview.setClipBindings(bindings)
+            petPreview.setMood(mood)
+            previewCaption.text = "Previewing $mood · Clip ${clipPicker.selectedItemPosition}"
+        }
+        fun syncClip() {
+            val mood = moods.getOrElse(moodPicker.selectedItemPosition) { "idle" }
+            clipPicker.setSelection(prefs.getInt("clip_$mood", moods.indexOf(mood)).coerceIn(0, 8))
+            previewSelectedClip()
+        }
+        moodPicker.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener { override fun onNothingSelected(p: AdapterView<*>?) = Unit; override fun onItemSelected(p: AdapterView<*>?, v: android.view.View?, pos: Int, id: Long) = syncClip() }
+        clipPicker.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener { override fun onNothingSelected(p: AdapterView<*>?) = Unit; override fun onItemSelected(p: AdapterView<*>?, v: android.view.View?, pos: Int, id: Long) { val mood = moods.getOrElse(moodPicker.selectedItemPosition) { "idle" }; prefs.edit().putInt("clip_$mood", pos).apply(); previewSelectedClip() } }
         root.addView(TextView(this).apply { text = "Animation clip for mood (clamped if this pet has fewer clips)" }); root.addView(moodPicker); root.addView(clipPicker)
         root.addView(CheckBox(this).apply { text = "Animate pet"; isChecked = prefs.getBoolean("animations_enabled", true); setTextColor(Color.WHITE); setOnCheckedChangeListener { _, checked -> prefs.edit().putBoolean("animations_enabled", checked).apply() } })
         val fpsLabel = TextView(this); val fps = SeekBar(this).apply { max = 11; progress = prefs.getInt("animation_fps", 5).coerceIn(1, 12) - 1 }; fun paintFps() { fpsLabel.text = "Animation speed: ${fps.progress + 1} fps" }; paintFps(); fps.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener { override fun onProgressChanged(s: SeekBar?, p: Int, u: Boolean) { prefs.edit().putInt("animation_fps", p + 1).apply(); paintFps() }; override fun onStartTrackingTouch(s: SeekBar?) = Unit; override fun onStopTrackingTouch(s: SeekBar?) = Unit }); root.addView(fpsLabel); root.addView(fps)
