@@ -9,6 +9,7 @@ type Device = { token_hash: string; user_id: string; name: string; role: "agent"
 type Event = Record<string, unknown> & { sessionId: string; eventName: string; timestamp?: number };
 type Auth = { userId: string; deviceHash: string; role: Device["role"] };
 type CareDelta = { id?: string; sessionId: string; agentKind?: string; tokens: number; project?: string; createdAt?: number };
+type Approval = { requestId: string; sessionId: string; agentKind: string; toolName: string; summary: string; project?: string; createdAt: number; expiresAt: number; decision?: "allow" | "deny" };
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), {
   status, headers: { "content-type": "application/json", "cache-control": "no-store" },
@@ -102,6 +103,33 @@ export default {
       await room(env, auth.userId).fetch("https://room/publish", { method: "POST", body: JSON.stringify({ type: "event", id, event: normalized }) });
       return json({ id, acceptedAt: now }, 202);
     }
+    if (url.pathname === "/v1/approvals" && request.method === "POST") {
+      if (auth.role !== "agent") return json({ error: "agent token required" }, 403);
+      const body = await request.json<any>().catch(() => null);
+      if (!body || typeof body.requestId !== "string" || !/^[a-zA-Z0-9_-]{16,100}$/.test(body.requestId)
+        || typeof body.sessionId !== "string" || !body.sessionId
+        || typeof body.toolName !== "string" || !body.toolName) return json({ error: "requestId, sessionId and toolName are required" }, 400);
+      const approval: Approval = {
+        requestId: body.requestId, sessionId: body.sessionId.slice(0, 200), agentKind: String(body.agentKind || "codex").slice(0, 32),
+        toolName: body.toolName.slice(0, 100), summary: String(body.summary || "").slice(0, 4000),
+        project: typeof body.project === "string" ? body.project.slice(0, 500) : undefined,
+        createdAt: Date.now(), expiresAt: Date.now() + 180_000,
+      };
+      return room(env, auth.userId).fetch("https://room/approval/create", { method: "POST", body: JSON.stringify(approval) });
+    }
+    const approvalMatch = url.pathname.match(/^\/v1\/approvals\/([a-zA-Z0-9_-]{16,100})(?:\/(decision))?$/);
+    if (approvalMatch) {
+      const requestId = approvalMatch[1];
+      if (request.method === "GET") {
+        if (auth.role !== "agent") return json({ error: "agent token required" }, 403);
+        return room(env, auth.userId).fetch(`https://room/approval/result?id=${encodeURIComponent(requestId)}`);
+      }
+      if (request.method === "POST" && approvalMatch[2] === "decision") {
+        const body = await request.json<any>().catch(() => null);
+        if (body?.decision !== "allow" && body?.decision !== "deny") return json({ error: "decision must be allow or deny" }, 400);
+        return room(env, auth.userId).fetch(`https://room/approval/decision?id=${encodeURIComponent(requestId)}`, { method: "POST", body: JSON.stringify({ decision: body.decision }) });
+      }
+    }
     if (url.pathname === "/v1/care-deltas" && request.method === "POST") {
       if (auth.role !== "agent") return json({ error: "agent token required" }, 403);
       const delta = await request.json<unknown>().catch(() => null);
@@ -184,6 +212,7 @@ export default {
 
 export class PetRoom implements DurableObject {
   private sessions = new Map<string, Event>();
+  private approvals = new Map<string, Approval>();
   private readonly ready: Promise<void>;
   constructor(private ctx: DurableObjectState) {
     // Hibernation reconstructs the object while clients remain connected. Reload
@@ -192,6 +221,8 @@ export class PetRoom implements DurableObject {
     this.ready = this.ctx.blockConcurrencyWhile(async () => {
       const saved = await this.ctx.storage.get<[string, Event][]>("sessions");
       this.sessions = new Map(saved || []);
+      const approvals = await this.ctx.storage.get<[string, Approval][]>("approvals");
+      this.approvals = new Map(approvals || []);
     });
   }
   async fetch(request: Request): Promise<Response> {
@@ -204,6 +235,7 @@ export class PetRoom implements DurableObject {
       server.serializeAttachment({ kind: "companion" });
       server.send(JSON.stringify({ type: "connected", connectedAt: Date.now(), companions: this.ctx.getWebSockets().length }));
       server.send(JSON.stringify({ type: "snapshot", sessions: [...this.sessions.values()] }));
+      for (const approval of this.approvals.values()) if (!approval.decision && approval.expiresAt > Date.now()) server.send(JSON.stringify({ type: "approval_requested", approval }));
       return new Response(null, { status: 101, webSocket: client });
     }
     if (path === "/status") return json({ companions: this.ctx.getWebSockets().length, checkedAt: Date.now() });
@@ -216,7 +248,57 @@ export class PetRoom implements DurableObject {
       this.broadcast(message);
       return new Response(null, { status: 204 });
     }
+    if (path === "/approval/create" && request.method === "POST") {
+      const approval = await request.json<Approval>();
+      const existing = this.approvals.get(approval.requestId);
+      if (existing) return json({ ok: true, requestId: existing.requestId, state: existing.decision ? "resolved" : "pending", decision: existing.decision });
+      this.approvals.set(approval.requestId, approval);
+      await this.ctx.storage.put("approvals", [...this.approvals.entries()]);
+      await this.scheduleApprovalAlarm();
+      this.broadcast({ type: "approval_requested", approval });
+      return json({ ok: true, requestId: approval.requestId, state: "pending" }, 202);
+    }
+    if (path === "/approval/result" && request.method === "GET") {
+      const id = new URL(request.url).searchParams.get("id") || "";
+      const approval = this.approvals.get(id);
+      if (!approval) return json({ error: "approval not found" }, 404);
+      if (!approval.decision && approval.expiresAt <= Date.now()) {
+        approval.decision = "deny";
+        await this.ctx.storage.put("approvals", [...this.approvals.entries()]);
+        this.broadcast({ type: "approval_resolved", requestId: id, decision: "deny", expired: true });
+      }
+      return json({ requestId: id, state: approval.decision ? "resolved" : "pending", decision: approval.decision || null, expiresAt: approval.expiresAt });
+    }
+    if (path === "/approval/decision" && request.method === "POST") {
+      const id = new URL(request.url).searchParams.get("id") || "";
+      const body = await request.json<{ decision?: "allow" | "deny" }>();
+      const approval = this.approvals.get(id);
+      if (!approval) return json({ error: "approval not found" }, 404);
+      if (!approval.decision && approval.expiresAt <= Date.now()) approval.decision = "deny";
+      const accepted = !approval.decision;
+      if (accepted) approval.decision = body.decision;
+      await this.ctx.storage.put("approvals", [...this.approvals.entries()]);
+      this.broadcast({ type: "approval_resolved", requestId: id, decision: approval.decision });
+      await this.scheduleApprovalAlarm();
+      return json({ ok: true, accepted, decision: approval.decision });
+    }
     return new Response("not found", { status: 404 });
+  }
+  async alarm(): Promise<void> {
+    const now = Date.now();
+    for (const [id, approval] of this.approvals) {
+      if (!approval.decision && approval.expiresAt <= now) {
+        approval.decision = "deny";
+        this.broadcast({ type: "approval_resolved", requestId: id, decision: "deny", expired: true });
+      } else if (approval.decision && approval.expiresAt + 60_000 <= now) this.approvals.delete(id);
+    }
+    await this.ctx.storage.put("approvals", [...this.approvals.entries()]);
+    await this.scheduleApprovalAlarm();
+  }
+  private async scheduleApprovalAlarm(): Promise<void> {
+    const next = [...this.approvals.values()].map(a => a.decision ? a.expiresAt + 60_000 : a.expiresAt).sort((a, b) => a - b)[0];
+    if (next) await this.ctx.storage.setAlarm(next);
+    else await this.ctx.storage.deleteAlarm();
   }
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     if (message === "snapshot") ws.send(JSON.stringify({ type: "snapshot", sessions: [...this.sessions.values()] }));

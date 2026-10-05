@@ -18,6 +18,12 @@ import androidx.core.content.ContextCompat
 
 /** Small pairing screen. The floating companion itself is owned by the service. */
 class MainActivity : AppCompatActivity() {
+    companion object {
+        const val EXTRA_APPROVAL_ID = "approval_id"
+        const val EXTRA_APPROVAL_TOOL = "approval_tool"
+        const val EXTRA_APPROVAL_SUMMARY = "approval_summary"
+        const val EXTRA_APPROVAL_PROJECT = "approval_project"
+    }
     private lateinit var overlayStatus: TextView
     private var careStatus: TextView? = null
     private val statusReceiver = object : BroadcastReceiver() {
@@ -246,6 +252,40 @@ class MainActivity : AppCompatActivity() {
         setContentView(shell)
         select(0)
         showOverlayStatus()
+        showApprovalIfRequested(intent)
+    }
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        showApprovalIfRequested(intent)
+    }
+    private fun showApprovalIfRequested(intent: Intent) {
+        val id = intent.getStringExtra(EXTRA_APPROVAL_ID)?.takeIf(String::isNotBlank) ?: return
+        intent.removeExtra(EXTRA_APPROVAL_ID)
+        val tool = intent.getStringExtra(EXTRA_APPROVAL_TOOL).orEmpty().ifBlank { "Action" }
+        val summary = intent.getStringExtra(EXTRA_APPROVAL_SUMMARY).orEmpty()
+        val project = intent.getStringExtra(EXTRA_APPROVAL_PROJECT).orEmpty()
+        val details = buildString {
+            append("Tool: ").append(tool)
+            if (project.isNotBlank()) append("\nProject: ").append(project)
+            if (summary.isNotBlank()) append("\n\n").append(summary)
+            append("\n\nAllow this action once?")
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Codex is waiting for approval")
+            .setMessage(details)
+            .setNegativeButton("Deny") { _, _ -> submitApprovalDecision(id, "deny") }
+            .setPositiveButton("Allow once") { _, _ -> submitApprovalDecision(id, "allow") }
+            .show()
+    }
+    private fun submitApprovalDecision(requestId: String, decision: String) {
+        val prefs = getSharedPreferences("relay", MODE_PRIVATE)
+        val relay = RelayClient(prefs.getString("endpoint", "") ?: "", prefs.getString("token", "") ?: "", {})
+        relay.submitApprovalDecision(requestId, decision) { result -> runOnUiThread {
+            if (result == null) Toast.makeText(this, "Could not send approval — check relay connection", Toast.LENGTH_LONG).show()
+            else if (!result.optBoolean("accepted", true)) Toast.makeText(this, "Already answered: ${result.optString("decision")}", Toast.LENGTH_LONG).show()
+            else Toast.makeText(this, if (decision == "allow") "Allowed — Codex will continue" else "Denied — Codex will continue", Toast.LENGTH_SHORT).show()
+        } }
     }
     override fun onStart() {
         super.onStart()

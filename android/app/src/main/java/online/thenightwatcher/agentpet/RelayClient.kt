@@ -75,4 +75,18 @@ class RelayClient(
             }
         })
     }
+
+    fun submitApprovalDecision(requestId: String, decision: String, onComplete: (JSONObject?) -> Unit) {
+        val body = JSONObject().put("decision", decision)
+        val request = Request.Builder().url(endpoint.removeSuffix("/") + "/v1/approvals/$requestId/decision")
+            .post(body.toString().toRequestBody("application/json".toMediaType()))
+            .header("Authorization", "Bearer $token").build()
+        client.newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: java.io.IOException) = onComplete(null)
+            override fun onResponse(call: Call, response: Response) = response.use {
+                val result = runCatching { JSONObject(it.body?.string() ?: "{}") }.getOrNull()
+                onComplete(if (it.isSuccessful) result else null)
+            }
+        })
+    }
 }

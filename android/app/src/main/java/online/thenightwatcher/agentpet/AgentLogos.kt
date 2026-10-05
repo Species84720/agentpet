@@ -35,6 +35,14 @@ object AgentLogos {
     }
 
     private fun render(context: Context, kind: String, size: Int): Bitmap {
+        // The checked-in Codex SVG uses compact arc commands that Android's
+        // path parser rejects on some OS/library versions. Draw its rosette
+        // directly so Codex never degrades to the generic green “C” badge.
+        if (kind == "codex") {
+            return Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888).also {
+                drawCodexMark(Canvas(it), Paint(Paint.ANTI_ALIAS_FLAG), size)
+            }
+        }
         val svg = runCatching { context.assets.open("agent-icons/$kind.svg").bufferedReader().use { it.readText() } }.getOrNull()
         val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
@@ -106,6 +114,30 @@ object AgentLogos {
         val label = kind.firstOrNull()?.uppercaseChar()?.toString() ?: "?"
         val y = size / 2f - (paint.ascent() + paint.descent()) / 2f
         canvas.drawText(label, size / 2f, y, paint)
+    }
+
+    private fun drawCodexMark(canvas: Canvas, paint: Paint, size: Int) {
+        val center = size / 2f
+        paint.color = 0xFF10A37F.toInt()
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = size * 0.105f
+        paint.strokeCap = Paint.Cap.ROUND
+        paint.strokeJoin = Paint.Join.ROUND
+        for (petal in 0 until 6) {
+            canvas.save()
+            canvas.rotate(petal * 60f, center, center)
+            val path = Path().apply {
+                moveTo(center, center - size * 0.34f)
+                cubicTo(center + size * 0.27f, center - size * 0.49f,
+                    center + size * 0.47f, center - size * 0.24f,
+                    center + size * 0.34f, center + size * 0.02f)
+                cubicTo(center + size * 0.24f, center + size * 0.22f,
+                    center + size * 0.06f, center + size * 0.28f,
+                    center - size * 0.11f, center + size * 0.22f)
+            }
+            canvas.drawPath(path, paint)
+            canvas.restore()
+        }
     }
 
     private fun parseColor(value: String?): Int? = value?.takeIf { it.startsWith("#") }?.let { runCatching { Color.parseColor(it) }.getOrNull() }

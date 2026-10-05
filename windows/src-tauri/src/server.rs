@@ -19,20 +19,41 @@ use tauri::{AppHandle, Emitter};
 
 pub const HOOK_PORT: u16 = 47628;
 
-// Held approval requests, keyed by request id. A gated PreToolUse parks its HTTP
-// response here until the user clicks Allow/Deny (or a 10 s timeout fires).
+// Held approval requests, keyed by request id. A gated hook parks its HTTP
+// response until the desktop or phone submits a decision.
 fn pending() -> &'static Mutex<HashMap<String, Sender<String>>> {
     static P: OnceLock<Mutex<HashMap<String, Sender<String>>>> = OnceLock::new();
     P.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// Frontend → daemon: deliver the user's decision to the parked hook request.
-pub fn resolve_approval(id: &str, decision: &str) {
+pub fn resolve_approval(_app: &AppHandle, id: &str, decision: &str) {
+    let decision = if id.starts_with("codex-") {
+        cloud_approval_decision(id, decision).unwrap_or_else(|| decision.to_string())
+    } else { decision.to_string() };
     if let Ok(mut map) = pending().lock() {
         if let Some(tx) = map.remove(id) {
-            let _ = tx.send(decision.to_string());
+            let _ = tx.send(decision.clone());
         }
     }
+}
+
+fn cloud_approval_decision(id: &str, decision: &str) -> Option<String> {
+    let home = dirs::home_dir()?;
+    let config: Value = serde_json::from_slice(&std::fs::read(home.join(".agentpet/cloud-relay.json")).ok()?).ok()?;
+    let base = config.get("url")?.as_str()?.trim_end_matches('/');
+    let token = config.get("token")?.as_str()?;
+    if !base.starts_with("https://") || token.is_empty() { return None; }
+    let endpoint = format!("{base}/v1/approvals/{id}/decision");
+    let body = serde_json::json!({ "decision": decision }).to_string();
+    let auth = format!("Authorization: Bearer {token}");
+    let output = std::process::Command::new("curl").args([
+        "--silent", "--show-error", "--max-time", "2", "--request", "POST", &endpoint,
+        "--header", &auth, "--header", "Content-Type: application/json", "--data-binary", &body,
+    ]).output().ok()?;
+    if !output.status.success() { return None; }
+    let result: Value = serde_json::from_slice(&output.stdout).ok()?;
+    result.get("decision")?.as_str().map(str::to_owned)
 }
 
 /// Opt-in whitelist: the gate stays OFF unless `~/.agentpet/approval-gate.json`
@@ -50,6 +71,9 @@ pub fn gated_tools() -> HashSet<String> {
 
 fn is_gated(body: &str) -> bool {
     let Ok(v) = serde_json::from_str::<Value>(body) else { return false };
+    if str_of(&v, "agent") == "codex" && str_of(&v, "event") == "PermissionRequest" {
+        return v.get("approvalRequestId").and_then(Value::as_str).is_some_and(|id| !id.is_empty());
+    }
     if str_of(&v, "agent") != "claude" || str_of(&v, "event") != "PreToolUse" {
         return false;
     }
@@ -76,9 +100,10 @@ fn handle_approval(app: AppHandle, body: String, req: tiny_http::Request) {
             .into_iter()
             .find(|s| !s.is_empty())
             .unwrap_or("");
-        s.chars().take(80).collect()
+        s.chars().take(4000).collect()
     };
-    let id = format!("{}-{}", session, now_millis());
+    let id = v.get("approvalRequestId").and_then(Value::as_str).map(str::to_owned)
+        .unwrap_or_else(|| format!("{}-{}", session, now_millis()));
 
     let (tx, rx) = std::sync::mpsc::channel();
     if let Ok(mut map) = pending().lock() {
@@ -92,9 +117,9 @@ fn handle_approval(app: AppHandle, body: String, req: tiny_http::Request) {
         serde_json::json!({ "id": id, "session": session, "tool": tool, "summary": summary }),
     );
 
-    let decision = rx
-        .recv_timeout(std::time::Duration::from_secs(10))
-        .unwrap_or_else(|_| "ask".to_string());
+    let timeout = if id.starts_with("codex-") { 185 } else { 10 };
+    let decision = rx.recv_timeout(std::time::Duration::from_secs(timeout))
+        .unwrap_or_else(|_| if id.starts_with("codex-") { "deny".to_string() } else { "ask".to_string() });
     if let Ok(mut map) = pending().lock() {
         map.remove(&id);
     }
@@ -130,6 +155,18 @@ pub fn start(app: AppHandle) {
         for mut req in server.incoming_requests() {
             let mut body = String::new();
             let _ = req.as_reader().read_to_string(&mut body);
+            if req.url() == "/resolve" && req.method().as_str() == "POST" {
+                let value: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+                let id = str_of(&value, "id").to_string();
+                let decision = str_of(&value, "decision").to_string();
+                if id.starts_with("codex-") && (decision == "allow" || decision == "deny") {
+                    resolve_approval(&app, &id, &decision);
+                    let _ = req.respond(tiny_http::Response::from_string("ok"));
+                } else {
+                    let _ = req.respond(tiny_http::Response::from_string("invalid approval").with_status_code(400));
+                }
+                continue;
+            }
             // A gated PreToolUse blocks on the user's decision; hand it to a
             // dedicated thread (which owns `req` and responds later) so the
             // request loop keeps serving other events.

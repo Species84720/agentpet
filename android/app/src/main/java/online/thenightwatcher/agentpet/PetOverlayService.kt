@@ -28,7 +28,7 @@ class PetOverlayService : Service() {
         const val ACTION_CARE_UPDATED = "online.thenightwatcher.agentpet.CARE_UPDATED"
         const val ACTION_PET_CHANGED = "online.thenightwatcher.agentpet.PET_CHANGED"
         const val EXTRA_RELAY_STATUS = "status"
-        private const val DONE_SESSION_IDLE_MS = 3_000L
+        private const val DONE_SESSION_IDLE_MS = 30_000L
         // Match desktop SessionStore's staleActiveAfter policy.
         private const val ACTIVE_SESSION_STALE_MS = 5 * 60 * 1_000L
         private const val IDLE_SESSION_REMOVE_MS = 10 * 60 * 1_000L
@@ -39,6 +39,7 @@ class PetOverlayService : Service() {
     private var sprite: PetSpriteView? = null
     private var bubble: TextView? = null
     private var client: RelayClient? = null
+    private var pendingApproval: JSONObject? = null
     private val sessions = linkedMapOf<String, JSONObject>()
     private val reconnectHandler = Handler(Looper.getMainLooper())
     private val reconnect = Runnable { connect() }
@@ -116,12 +117,23 @@ class PetOverlayService : Service() {
                 MotionEvent.ACTION_MOVE -> { moved = moved || kotlin.math.abs(event.rawX - downX) > 12 || kotlin.math.abs(event.rawY - downY) > 12; params.x = baseX + (event.rawX - downX).toInt(); params.y = baseY + (event.rawY - downY).toInt(); windowManager.updateViewLayout(this, params); true }
                 MotionEvent.ACTION_UP -> {
                     if (!moved) {
-                        expanded = !expanded
-                        params.width = if (expanded) 360 else spriteSize + 56
-                        params.height = spriteSize + if (expanded) 220 else bubbleHeight
-                        bubble?.maxLines = if (expanded) 12 else if (multi) 4 else 2
-                        bubble?.layoutParams = (bubble?.layoutParams as? FrameLayout.LayoutParams)?.apply { height = if (expanded) 204 else bubbleHeight - 8 }
-                        windowManager.updateViewLayout(this, params)
+                        val approval = pendingApproval
+                        if (approval != null) {
+                            startActivity(Intent(this@PetOverlayService, MainActivity::class.java).apply {
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                                putExtra(MainActivity.EXTRA_APPROVAL_ID, approval.optString("requestId"))
+                                putExtra(MainActivity.EXTRA_APPROVAL_TOOL, approval.optString("toolName"))
+                                putExtra(MainActivity.EXTRA_APPROVAL_SUMMARY, approval.optString("summary"))
+                                putExtra(MainActivity.EXTRA_APPROVAL_PROJECT, approval.optString("project"))
+                            })
+                        } else {
+                            expanded = !expanded
+                            params.width = if (expanded) 360 else spriteSize + 56
+                            params.height = spriteSize + if (expanded) 220 else bubbleHeight
+                            bubble?.maxLines = if (expanded) 12 else if (multi) 4 else 2
+                            bubble?.layoutParams = (bubble?.layoutParams as? FrameLayout.LayoutParams)?.apply { height = if (expanded) 204 else bubbleHeight - 8 }
+                            windowManager.updateViewLayout(this, params)
+                        }
                     }
                     saved.edit().putInt("x", params.x).putInt("y", params.y).apply(); true
                 }
@@ -160,6 +172,25 @@ class PetOverlayService : Service() {
         if (::windowManager.isInitialized) getSystemService(NotificationManager::class.java).notify(7, notification())
     }
     private fun updatePet(frame: JSONObject) = Handler(mainLooper).post {
+        when (frame.optString("type")) {
+            "approval_requested" -> {
+                pendingApproval = frame.optJSONObject("approval")
+                pendingApproval?.let { approval ->
+                    bubble?.text = "${approval.optString("agentKind", "Agent")} needs approval · tap pet"
+                    sprite?.setMood("waiting")
+                }
+                return@post
+            }
+            "approval_resolved" -> {
+                if (frame.optString("requestId") == pendingApproval?.optString("requestId")) {
+                    pendingApproval = null
+                    bubble?.text = "Approval answered · resuming"
+                    sprite?.setMood("working")
+                    reconnectHandler.postDelayed({ if (pendingApproval == null) sessions.values.maxByOrNull(::eventTimeMs)?.let(::renderEvent) }, 2_000)
+                }
+                return@post
+            }
+        }
         if (frame.optString("type") == "care_delta") {
             syncCare()
             return@post

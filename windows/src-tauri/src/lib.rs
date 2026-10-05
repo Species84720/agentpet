@@ -224,8 +224,8 @@ fn focus_terminal(program: String, focus_url: String) {
 /// Deliver the user's Allow/Deny decision for a gated tool call back to the
 /// parked hook request (see server::handle_approval).
 #[tauri::command]
-fn resolve_approval(id: String, decision: String) {
-    crate::server::resolve_approval(&id, &decision);
+fn resolve_approval(app: tauri::AppHandle, id: String, decision: String) {
+    crate::server::resolve_approval(&app, &id, &decision);
 }
 
 /// Split-pet: ensure exactly one extra pet window `pet-<projectId>` exists per

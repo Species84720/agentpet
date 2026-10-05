@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""Best-effort Cloudflare mirror for Codex hooks.
-
-This is deliberately a separate Codex hook command from AgentPet's local
-AppImage hook. It reads the same stdin payload, posts a compatible AgentEvent
-to the configured relay, and always exits 0: a phone or network outage must
-never affect Codex or the local AgentPet integration.
-"""
+"""Cloudflare activity mirror and optional Codex mobile approval bridge."""
 
 import json
 import hashlib
@@ -14,7 +8,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+import queue
+import urllib.error
+import urllib.request
 
 try:
     import fcntl
@@ -26,6 +24,8 @@ CONFIG = os.environ.get("AGENTPET_RELAY_CONFIG", os.path.expanduser("~/.agentpet
 TIMEOUT_SECONDS = 0.7
 STATE = os.environ.get("AGENTPET_RELAY_USAGE_STATE", os.path.expanduser("~/.agentpet/cloud-relay-codex-usage.json"))
 LOCK = STATE + ".lock"
+APPROVAL_TIMEOUT_SECONDS = 180
+LOCAL_HOOK_URL = "http://127.0.0.1:47628"
 
 
 def post(curl: str, url: str, token: str, body: dict) -> bool:
@@ -42,6 +42,94 @@ def post(curl: str, url: str, token: str, body: dict) -> bool:
         return result.returncode == 0
     except subprocess.SubprocessError:
         return False
+
+
+def relay_json(url: str, token: str, body: dict | None = None, timeout: float = 2) -> dict | None:
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    request = urllib.request.Request(url, data=data, method="POST" if data is not None else "GET")
+    request.add_header("Authorization", "Bearer " + token)
+    if data is not None:
+        request.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except (OSError, ValueError, urllib.error.URLError):
+        return None
+
+
+def local_request(body: dict, result: queue.Queue) -> None:
+    data = json.dumps(body).encode("utf-8")
+    request = urllib.request.Request(LOCAL_HOOK_URL + "/event", data=data, method="POST",
+                                     headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=APPROVAL_TIMEOUT_SECONDS + 5) as response:
+            decision = response.read().decode("utf-8").strip()
+            if decision in ("allow", "deny"):
+                result.put(decision)
+    except (OSError, urllib.error.URLError):
+        pass
+
+
+def local_resolve(request_id: str, decision: str) -> None:
+    data = json.dumps({"id": request_id, "decision": decision}).encode("utf-8")
+    request = urllib.request.Request(LOCAL_HOOK_URL + "/resolve", data=data, method="POST",
+                                     headers={"Content-Type": "application/json"})
+    try:
+        urllib.request.urlopen(request, timeout=2).close()
+    except (OSError, urllib.error.URLError):
+        pass
+
+
+def codex_permission_hook(payload: dict, raw_payload: bytes, base_url: str, token: str) -> None:
+    """Race the local AgentPet bubble against Android; first decision wins."""
+    session_id = payload.get("session_id") or payload.get("conversation_id") or ""
+    tool_name = payload.get("tool_name") or "Action"
+    tool_input = payload.get("tool_input") if isinstance(payload.get("tool_input"), dict) else {}
+    summary = tool_input.get("description") or tool_input.get("command")
+    if not isinstance(summary, str) or not summary:
+        summary = json.dumps(tool_input, ensure_ascii=False, separators=(",", ":"))
+    request_id = "codex-" + hashlib.sha256(raw_payload).hexdigest()[:48]
+    project = payload.get("cwd") if isinstance(payload.get("cwd"), str) else ""
+    approval = {"requestId": request_id, "sessionId": session_id, "agentKind": "Codex",
+                "toolName": str(tool_name)[:100], "summary": summary[:4000], "project": project[:500]}
+
+    # Approval details live only in the Durable Object's short-lived state;
+    # never append commands or approval payloads to the D1 activity log.
+    if base_url and token:
+        relay_json(base_url + "/v1/approvals", token, approval, timeout=3)
+    local_event = {"agent": "codex", "event": "PermissionRequest", "session": session_id,
+                   "project": project, "message": "Approval required", "tool": str(tool_name),
+                   "desc": summary[:4000], "approvalRequestId": request_id}
+    local_result: queue.Queue = queue.Queue(maxsize=1)
+    threading.Thread(target=local_request, args=(local_event, local_result), daemon=True).start()
+
+    deadline = time.monotonic() + APPROVAL_TIMEOUT_SECONDS
+    decision = None
+    while time.monotonic() < deadline:
+        try:
+            decision = local_result.get_nowait()
+        except queue.Empty:
+            result = relay_json(base_url + "/v1/approvals/" + request_id, token, timeout=1.5) if base_url and token else None
+            if result and result.get("decision") in ("allow", "deny"):
+                decision = result["decision"]
+                local_resolve(request_id, decision)
+                break
+            time.sleep(0.5)
+        if decision:
+            if base_url and token:
+                relay_json(base_url + "/v1/approvals/" + request_id + "/decision", token,
+                           {"decision": decision}, timeout=2)
+            break
+
+    # Fail closed instead of leaving Codex's native approval prompt hanging.
+    if decision not in ("allow", "deny"):
+        decision = "deny"
+        if base_url and token:
+            relay_json(base_url + "/v1/approvals/" + request_id + "/decision", token,
+                       {"decision": decision}, timeout=2)
+        local_resolve(request_id, decision)
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PermissionRequest",
+                                                "decision": {"behavior": decision}}}))
 
 
 def find_rollout(session_id: str, supplied_path: object) -> str | None:
@@ -126,23 +214,33 @@ def new_usage_delta(path: str, session_id: str, curl: str, base_url: str, token:
 
 def main() -> None:
     try:
-        with open(CONFIG, encoding="utf-8") as file:
-            config = json.load(file)
-        base_url = str(config["url"]).rstrip("/")
-        token = str(config["token"])
-        if not base_url.startswith("https://") or not token:
-            return
-
-        payload = json.load(sys.stdin)
+        raw_payload = sys.stdin.buffer.read()
+        payload = json.loads(raw_payload)
         session_id = payload.get("session_id") or payload.get("conversation_id")
         event_name = payload.get("hook_event_name")
         if not isinstance(session_id, str) or not session_id or not isinstance(event_name, str) or not event_name:
             return
 
+        try:
+            with open(CONFIG, encoding="utf-8") as file:
+                config = json.load(file)
+            base_url = str(config["url"]).rstrip("/")
+            token = str(config["token"])
+        except (OSError, ValueError, KeyError, TypeError):
+            base_url, token = "", ""
+        if base_url and not base_url.startswith("https://"):
+            base_url = ""
+
+        agent = "copilot" if "--agent" in sys.argv and sys.argv.index("--agent") + 1 < len(sys.argv) and sys.argv[sys.argv.index("--agent") + 1] == "copilot" else "codex"
+        if agent == "codex" and event_name == "PermissionRequest":
+            codex_permission_hook(payload, raw_payload, base_url, token)
+            return
+        if not base_url or not token:
+            return
+
         model = payload.get("model")
         if isinstance(model, dict):
             model = model.get("display_name") or model.get("id")
-        agent = "copilot" if "--agent" in sys.argv and sys.argv.index("--agent") + 1 < len(sys.argv) and sys.argv[sys.argv.index("--agent") + 1] == "copilot" else "codex"
         body = {
             "sessionId": session_id,
             "agentKind": agent,
