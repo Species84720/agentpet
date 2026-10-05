@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 import queue
+import secrets
 import urllib.error
 import urllib.request
 
@@ -104,7 +105,9 @@ def codex_permission_hook(payload: dict, raw_payload: bytes, base_url: str, toke
     summary = tool_input.get("description") or tool_input.get("command")
     if not isinstance(summary, str) or not summary:
         summary = json.dumps(tool_input, ensure_ascii=False, separators=(",", ":"))
-    request_id = "codex-" + hashlib.sha256(raw_payload).hexdigest()[:48]
+    # Distinct permission requests can have byte-identical payloads, so avoid
+    # reusing a short-lived Durable Object approval ID for a later session.
+    request_id = "codex-" + hashlib.sha256(raw_payload).hexdigest()[:32] + "-" + secrets.token_hex(8)
     project = payload.get("cwd") if isinstance(payload.get("cwd"), str) else ""
     approval = {"requestId": request_id, "sessionId": session_id, "agentKind": "Codex",
                 "toolName": str(tool_name)[:100], "summary": summary[:4000], "project": project[:500]}

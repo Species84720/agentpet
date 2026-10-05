@@ -89,4 +89,17 @@ class RelayClient(
             }
         })
     }
+
+    fun fetchPendingApprovals(onComplete: (List<JSONObject>?) -> Unit) {
+        val request = Request.Builder().url(endpoint.removeSuffix("/") + "/v1/approvals")
+            .header("Authorization", "Bearer $token").build()
+        client.newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: java.io.IOException) = onComplete(null)
+            override fun onResponse(call: Call, response: Response) = response.use {
+                val approvals = runCatching { JSONObject(it.body?.string() ?: "{}").optJSONArray("approvals") }
+                    .getOrNull()?.let { array -> (0 until array.length()).mapNotNull(array::optJSONObject) }
+                onComplete(if (it.isSuccessful) approvals else null)
+            }
+        })
+    }
 }

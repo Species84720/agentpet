@@ -117,6 +117,10 @@ export default {
       };
       return room(env, auth.userId).fetch("https://room/approval/create", { method: "POST", body: JSON.stringify(approval) });
     }
+    if (url.pathname === "/v1/approvals" && request.method === "GET") {
+      if (auth.role !== "companion") return json({ error: "companion token required" }, 403);
+      return room(env, auth.userId).fetch("https://room/approval/list");
+    }
     const approvalMatch = url.pathname.match(/^\/v1\/approvals\/([a-zA-Z0-9_-]{16,100})(?:\/(decision|cancel))?$/);
     if (approvalMatch) {
       const requestId = approvalMatch[1];
@@ -278,6 +282,11 @@ export class PetRoom implements DurableObject {
         await this.scheduleApprovalAlarm();
       }
       return json({ requestId: id, state: approval.decision ? "resolved" : approval.cancelledAt ? "expired" : "pending", decision: approval.decision || null });
+    }
+    if (path === "/approval/list" && request.method === "GET") {
+      const now = Date.now();
+      const approvals = [...this.approvals.values()].filter(a => !a.decision && !a.cancelledAt && a.expiresAt > now);
+      return json({ approvals });
     }
     if (path === "/approval/decision" && request.method === "POST") {
       const id = new URL(request.url).searchParams.get("id") || "";

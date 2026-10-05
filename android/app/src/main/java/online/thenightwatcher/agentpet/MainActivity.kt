@@ -23,14 +23,20 @@ class MainActivity : AppCompatActivity() {
         const val EXTRA_APPROVAL_TOOL = "approval_tool"
         const val EXTRA_APPROVAL_SUMMARY = "approval_summary"
         const val EXTRA_APPROVAL_PROJECT = "approval_project"
+        const val EXTRA_OPEN_INPUTS = "open_inputs"
     }
     private lateinit var overlayStatus: TextView
     private var careStatus: TextView? = null
     private var updateStatus: TextView? = null
+    private var inputList: LinearLayout? = null
+    private var inputConnection: TextView? = null
+    private var openTab: ((Int) -> Unit)? = null
+    private val inputTabIndex = 2
     private val statusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action == PetOverlayService.ACTION_CARE_UPDATED) refreshCareStatus()
-            else showOverlayStatus(intent.getStringExtra(PetOverlayService.EXTRA_RELAY_STATUS))
+            else if (intent.action == PetOverlayService.ACTION_APPROVALS_UPDATED) refreshInputs()
+            else { showOverlayStatus(intent.getStringExtra(PetOverlayService.EXTRA_RELAY_STATUS)); refreshInputs() }
         }
     }
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -211,7 +217,13 @@ class MainActivity : AppCompatActivity() {
         val bubblePage = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val carePage = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val historyPage = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val inputsPage = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val connectionPage = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        inputsPage.addView(TextView(this).apply { text = "Requests waiting for your decision"; textSize = 20f; setTypeface(typeface, android.graphics.Typeface.BOLD); setTextColor(Color.rgb(143, 221, 104)); setPadding(0, 8, 0, 8) })
+        inputConnection = TextView(this).apply { setTextColor(Color.LTGRAY); setPadding(0, 0, 0, 12) }
+        inputsPage.addView(inputConnection)
+        inputList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        inputsPage.addView(inputList)
         var target = petPage
         original.drop(3).forEach { view ->
             val label = (view as? TextView)?.text?.toString().orEmpty()
@@ -233,7 +245,7 @@ class MainActivity : AppCompatActivity() {
                 is TextView -> if (child !is Button && child !is CheckBox) child.setTextColor(Color.WHITE)
             }
         }
-        listOf(petPage, bubblePage, carePage, historyPage, connectionPage).forEach(::prepare)
+        listOf(petPage, bubblePage, carePage, historyPage, inputsPage, connectionPage).forEach(::prepare)
         val shell = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.rgb(17, 22, 32)) }
         original.take(3).forEach(shell::addView)
         val tabBar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(8, 4, 8, 4) }
@@ -241,7 +253,7 @@ class MainActivity : AppCompatActivity() {
         val pageHost = FrameLayout(this)
         shell.addView(tabScroll)
         shell.addView(pageHost, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
-        val pages = listOf("Pet" to petPage, "Bubble" to bubblePage, "Care" to carePage, "History" to historyPage, "Connection" to connectionPage)
+        val pages = listOf("Pet" to petPage, "Bubble" to bubblePage, "Inputs" to inputsPage, "Care" to carePage, "History" to historyPage, "Connection" to connectionPage)
         val pageViews = pages.map { (_, page) -> ScrollView(this).apply { addView(page) } }
         val tabButtons = mutableListOf<Button>()
         fun select(index: Int) {
@@ -249,6 +261,7 @@ class MainActivity : AppCompatActivity() {
             pageHost.addView(pageViews[index])
             tabButtons.forEachIndexed { i, button -> button.setTextColor(if (i == index) Color.rgb(17, 22, 32) else Color.WHITE); button.setBackground(if (i == index) tabSelectedBackground() else tabBackground()) }
         }
+        openTab = ::select
         pages.forEachIndexed { index, pair -> tabBar.addView(Button(this).apply { text = pair.first; isAllCaps = false; minWidth = 0; setPadding(14, 8, 14, 8); setOnClickListener { select(index) }; tabButtons += this }) }
         connectionPage.addView(TextView(this).apply {
             text = "AgentPet ${BuildConfig.VERSION_NAME} · build ${BuildConfig.VERSION_CODE}"
@@ -268,34 +281,22 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener { checkForUpdates(force = true) }
         })
         setContentView(shell)
-        select(0)
+        refreshInputs()
+        select(if (intent.getBooleanExtra(EXTRA_OPEN_INPUTS, false) || intent.hasExtra(EXTRA_APPROVAL_ID)) inputTabIndex else 0)
         showOverlayStatus()
         showApprovalIfRequested(intent)
-        checkForUpdates(force = false, showPrompt = intent.getStringExtra(EXTRA_APPROVAL_ID).isNullOrBlank())
+        checkForUpdates(force = false, showPrompt = intent.getStringExtra(EXTRA_APPROVAL_ID).isNullOrBlank() && !intent.getBooleanExtra(EXTRA_OPEN_INPUTS, false))
     }
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         showApprovalIfRequested(intent)
+        if (intent.getBooleanExtra(EXTRA_OPEN_INPUTS, false)) openTab?.invoke(inputTabIndex)
     }
     private fun showApprovalIfRequested(intent: Intent) {
         val id = intent.getStringExtra(EXTRA_APPROVAL_ID)?.takeIf(String::isNotBlank) ?: return
         intent.removeExtra(EXTRA_APPROVAL_ID)
-        val tool = intent.getStringExtra(EXTRA_APPROVAL_TOOL).orEmpty().ifBlank { "Action" }
-        val summary = intent.getStringExtra(EXTRA_APPROVAL_SUMMARY).orEmpty()
-        val project = intent.getStringExtra(EXTRA_APPROVAL_PROJECT).orEmpty()
-        val details = buildString {
-            append("Tool: ").append(tool)
-            if (project.isNotBlank()) append("\nProject: ").append(project)
-            if (summary.isNotBlank()) append("\n\n").append(summary)
-            append("\n\nAllow this action once?")
-        }
-        AlertDialog.Builder(this)
-            .setTitle("Codex is waiting for approval")
-            .setMessage(details)
-            .setNegativeButton("Deny") { _, _ -> submitApprovalDecision(id, "deny") }
-            .setPositiveButton("Allow once") { _, _ -> submitApprovalDecision(id, "allow") }
-            .show()
+        openTab?.invoke(inputTabIndex)
     }
     private fun submitApprovalDecision(requestId: String, decision: String) {
         val prefs = getSharedPreferences("relay", MODE_PRIVATE)
@@ -305,12 +306,60 @@ class MainActivity : AppCompatActivity() {
             else if (result.optString("state") == "expired") Toast.makeText(this, "Approval window ended — answer in Codex", Toast.LENGTH_LONG).show()
             else if (!result.optBoolean("accepted", true)) Toast.makeText(this, "Already answered: ${result.optString("decision")}", Toast.LENGTH_LONG).show()
             else Toast.makeText(this, if (decision == "allow") "Allowed — Codex will continue" else "Denied — Codex will continue", Toast.LENGTH_SHORT).show()
+            if (result != null && (result.optBoolean("accepted") || result.optString("state") == "expired")) {
+                ApprovalInbox.remove(this, requestId)
+                refreshInputs()
+            }
         } }
+    }
+    private fun refreshInputs() {
+        val host = inputList ?: return
+        host.removeAllViews()
+        val connected = getSharedPreferences("relay", MODE_PRIVATE).getString("connection_status", "Not connected") ?: "Not connected"
+        inputConnection?.text = "Relay: $connected"
+        val approvals = ApprovalInbox.all(this)
+        if (approvals.isEmpty()) {
+            host.addView(TextView(this).apply {
+                text = "No pending requests. Keep the floating pet connected; incoming requests will appear here with their session, project, and tool details."
+                setTextColor(Color.LTGRAY); textSize = 15f; setPadding(16, 18, 16, 18); background = panelBackground()
+            })
+            return
+        }
+        approvals.forEach { approval ->
+            val id = approval.optString("requestId")
+            val session = approval.optString("sessionId").ifBlank { "Unknown session" }
+            val project = approval.optString("project").ifBlank { "Project not supplied" }
+            val expires = approval.optLong("expiresAt")
+            val remaining = ((expires - System.currentTimeMillis()).coerceAtLeast(0) / 1000)
+            val card = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL; setPadding(16, 14, 16, 14); background = panelBackground()
+            }
+            card.addView(TextView(this).apply {
+                text = "${approval.optString("agentKind", "Agent")} · ${approval.optString("toolName", "Action")}"
+                textSize = 17f; setTypeface(typeface, android.graphics.Typeface.BOLD); setTextColor(Color.WHITE)
+            })
+            card.addView(TextView(this).apply {
+                text = "Project: $project\nSession: $session\nExpires in ${remaining / 60}:${(remaining % 60).toString().padStart(2, '0')}"
+                setTextColor(Color.LTGRAY); setPadding(0, 8, 0, 8)
+            })
+            val summary = approval.optString("summary")
+            card.addView(TextView(this).apply {
+                text = summary.ifBlank { "No additional details supplied." }; setTextColor(Color.WHITE); textSize = 14f
+                maxLines = 12; setPadding(0, 0, 0, 10)
+            })
+            card.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.END
+                addView(Button(this@MainActivity).apply { text = "Reject"; setOnClickListener { submitApprovalDecision(id, "deny") } })
+                addView(Button(this@MainActivity).apply { text = "Approve"; setOnClickListener { submitApprovalDecision(id, "allow") } })
+            })
+            host.addView(card, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { bottomMargin = 12 })
+        }
     }
     override fun onStart() {
         super.onStart()
-        ContextCompat.registerReceiver(this, statusReceiver, IntentFilter().apply { addAction(PetOverlayService.ACTION_RELAY_STATUS); addAction(PetOverlayService.ACTION_CARE_UPDATED) }, ContextCompat.RECEIVER_NOT_EXPORTED)
+        ContextCompat.registerReceiver(this, statusReceiver, IntentFilter().apply { addAction(PetOverlayService.ACTION_RELAY_STATUS); addAction(PetOverlayService.ACTION_CARE_UPDATED); addAction(PetOverlayService.ACTION_APPROVALS_UPDATED) }, ContextCompat.RECEIVER_NOT_EXPORTED)
         if (::overlayStatus.isInitialized) showOverlayStatus()
+        refreshInputs()
     }
     override fun onResume() {
         super.onResume()

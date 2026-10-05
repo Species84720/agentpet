@@ -26,6 +26,7 @@ class PetOverlayService : Service() {
     companion object {
         const val ACTION_RELAY_STATUS = "online.thenightwatcher.agentpet.RELAY_STATUS"
         const val ACTION_CARE_UPDATED = "online.thenightwatcher.agentpet.CARE_UPDATED"
+        const val ACTION_APPROVALS_UPDATED = "online.thenightwatcher.agentpet.APPROVALS_UPDATED"
         const val ACTION_PET_CHANGED = "online.thenightwatcher.agentpet.PET_CHANGED"
         const val EXTRA_RELAY_STATUS = "status"
         private const val DONE_SESSION_IDLE_MS = 30_000L
@@ -39,10 +40,16 @@ class PetOverlayService : Service() {
     private var sprite: PetSpriteView? = null
     private var bubble: TextView? = null
     private var client: RelayClient? = null
-    private var pendingApproval: JSONObject? = null
+    private val pendingApprovals = linkedMapOf<String, JSONObject>()
     private val sessions = linkedMapOf<String, JSONObject>()
     private val reconnectHandler = Handler(Looper.getMainLooper())
     private val reconnect = Runnable { connect() }
+    private val approvalPoll = object : Runnable {
+        override fun run() {
+            syncPendingApprovals()
+            reconnectHandler.postDelayed(this, 5_000)
+        }
+    }
     private val doneResetRunnables = mutableMapOf<String, Runnable>()
     private val sessionExpiry = object : Runnable {
         override fun run() {
@@ -60,7 +67,9 @@ class PetOverlayService : Service() {
     override fun onCreate() {
         super.onCreate()
         ContextCompat.registerReceiver(this, settingsReceiver, IntentFilter(ACTION_PET_CHANGED), ContextCompat.RECEIVER_NOT_EXPORTED)
+        ApprovalInbox.all(this).forEach { approval -> pendingApprovals[approval.optString("requestId")] = approval }
         reconnectHandler.postDelayed(sessionExpiry, SESSION_SWEEP_INTERVAL_MS)
+        reconnectHandler.postDelayed(approvalPoll, 1_000)
     }
     private var x = 0; private var y = 180
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -117,23 +126,10 @@ class PetOverlayService : Service() {
                 MotionEvent.ACTION_MOVE -> { moved = moved || kotlin.math.abs(event.rawX - downX) > 12 || kotlin.math.abs(event.rawY - downY) > 12; params.x = baseX + (event.rawX - downX).toInt(); params.y = baseY + (event.rawY - downY).toInt(); windowManager.updateViewLayout(this, params); true }
                 MotionEvent.ACTION_UP -> {
                     if (!moved) {
-                        val approval = pendingApproval
-                        if (approval != null) {
-                            startActivity(Intent(this@PetOverlayService, MainActivity::class.java).apply {
-                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                                putExtra(MainActivity.EXTRA_APPROVAL_ID, approval.optString("requestId"))
-                                putExtra(MainActivity.EXTRA_APPROVAL_TOOL, approval.optString("toolName"))
-                                putExtra(MainActivity.EXTRA_APPROVAL_SUMMARY, approval.optString("summary"))
-                                putExtra(MainActivity.EXTRA_APPROVAL_PROJECT, approval.optString("project"))
-                            })
-                        } else {
-                            expanded = !expanded
-                            params.width = if (expanded) 360 else spriteSize + 56
-                            params.height = spriteSize + if (expanded) 220 else bubbleHeight
-                            bubble?.maxLines = if (expanded) 12 else if (multi) 4 else 2
-                            bubble?.layoutParams = (bubble?.layoutParams as? FrameLayout.LayoutParams)?.apply { height = if (expanded) 204 else bubbleHeight - 8 }
-                            windowManager.updateViewLayout(this, params)
-                        }
+                        startActivity(Intent(this@PetOverlayService, MainActivity::class.java).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                            putExtra(MainActivity.EXTRA_OPEN_INPUTS, true)
+                        })
                     }
                     saved.edit().putInt("x", params.x).putInt("y", params.y).apply(); true
                 }
@@ -169,25 +165,67 @@ class PetOverlayService : Service() {
     private fun setConnectionStatus(status: String) {
         getSharedPreferences("relay", MODE_PRIVATE).edit().putString("connection_status", status).apply()
         sendBroadcast(Intent(ACTION_RELAY_STATUS).setPackage(packageName).putExtra(EXTRA_RELAY_STATUS, status))
+        sendBroadcast(Intent(ACTION_APPROVALS_UPDATED).setPackage(packageName))
         if (::windowManager.isInitialized) getSystemService(NotificationManager::class.java).notify(7, notification())
+    }
+    private fun syncPendingApprovals() {
+        val relay = client ?: return
+        relay.fetchPendingApprovals { approvals ->
+            if (approvals == null) return@fetchPendingApprovals
+            Handler(mainLooper).post {
+                val activeIds = approvals.map { it.optString("requestId") }.filter(String::isNotBlank).toSet()
+                pendingApprovals.keys.filterNot(activeIds::contains).toList().forEach { id ->
+                    pendingApprovals.remove(id)
+                    ApprovalInbox.remove(this, id)
+                }
+                approvals.forEach { approval ->
+                    val id = approval.optString("requestId")
+                    if (id.isNotBlank()) {
+                        pendingApprovals[id] = JSONObject(approval.toString())
+                        ApprovalInbox.put(this, approval)
+                    }
+                }
+                if (pendingApprovals.isNotEmpty()) {
+                    bubble?.text = "${pendingApprovals.size} approval request${if (pendingApprovals.size == 1) "" else "s"} · tap pet"
+                    sprite?.setMood("waiting")
+                } else if (bubble?.text?.contains("approval", ignoreCase = true) == true) {
+                    sessions.values.maxByOrNull(::eventTimeMs)?.let(::renderEvent)
+                        ?: run { bubble?.text = "Ready to help"; sprite?.setMood("idle") }
+                }
+                sendBroadcast(Intent(ACTION_APPROVALS_UPDATED).setPackage(packageName))
+            }
+        }
     }
     private fun updatePet(frame: JSONObject) = Handler(mainLooper).post {
         when (frame.optString("type")) {
             "approval_requested" -> {
-                pendingApproval = frame.optJSONObject("approval")
-                pendingApproval?.let { approval ->
-                    bubble?.text = "${approval.optString("agentKind", "Agent")} needs approval · tap pet"
+                frame.optJSONObject("approval")?.let { approval ->
+                    val id = approval.optString("requestId")
+                    if (id.isNotBlank()) {
+                        pendingApprovals[id] = JSONObject(approval.toString())
+                        ApprovalInbox.put(this, approval)
+                    }
+                    bubble?.text = if (pendingApprovals.size > 1) "${pendingApprovals.size} approval requests · tap pet" else "${approval.optString("agentKind", "Agent")} needs approval · tap pet"
                     sprite?.setMood("waiting")
+                    sendBroadcast(Intent(ACTION_APPROVALS_UPDATED).setPackage(packageName))
                 }
                 return@post
             }
             "approval_resolved" -> {
-                if (frame.optString("requestId") == pendingApproval?.optString("requestId")) {
-                    pendingApproval = null
+                val id = frame.optString("requestId")
+                if (id.isNotBlank()) {
+                    pendingApprovals.remove(id)
+                    ApprovalInbox.remove(this, id)
+                    sendBroadcast(Intent(ACTION_APPROVALS_UPDATED).setPackage(packageName))
                     val expired = frame.optBoolean("expired") || frame.optBoolean("cancelled")
-                    bubble?.text = if (expired) "Timed out · approve in Codex" else "Approval answered · resuming"
-                    sprite?.setMood(if (expired) "waiting" else "working")
-                    reconnectHandler.postDelayed({ if (pendingApproval == null) sessions.values.maxByOrNull(::eventTimeMs)?.let(::renderEvent) }, 2_000)
+                    if (pendingApprovals.isNotEmpty()) {
+                        bubble?.text = "${pendingApprovals.size} approval requests · tap pet"
+                        sprite?.setMood("waiting")
+                    } else {
+                        bubble?.text = if (expired) "Timed out · approve in Codex" else "Approval answered · resuming"
+                        sprite?.setMood(if (expired) "waiting" else "working")
+                        reconnectHandler.postDelayed({ if (pendingApprovals.isEmpty()) sessions.values.maxByOrNull(::eventTimeMs)?.let(::renderEvent) }, 2_000)
+                    }
                 }
                 return@post
             }
