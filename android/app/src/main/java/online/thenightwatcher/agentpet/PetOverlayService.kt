@@ -144,7 +144,8 @@ class PetOverlayService : Service() {
                                 bubble?.maxLines = if (expanded) 10 else if (multi) 4 else 2
                                 bubble?.layoutParams?.height = if (expanded) 212 else bubbleHeight - 8
                                 params.height = spriteSize + if (expanded) 220 else bubbleHeight
-                                runCatching { overlay?.let { windowManager.updateViewLayout(it, params) } }
+                                val petOverlay = this@PetOverlayService.overlay
+                                if (petOverlay != null) runCatching { windowManager.updateViewLayout(petOverlay, params) }
                             }.also { tapHandler.postDelayed(it, android.view.ViewConfiguration.getDoubleTapTimeout().toLong()) }
                         }
                     }
