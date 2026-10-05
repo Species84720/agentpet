@@ -29,7 +29,6 @@ class PetOverlayService : Service() {
         const val ACTION_PET_CHANGED = "online.thenightwatcher.agentpet.PET_CHANGED"
         const val EXTRA_RELAY_STATUS = "status"
         private const val DONE_SESSION_IDLE_MS = 30_000L
-        private const val ACTIVE_SESSION_REMOVE_MS = 5 * 60 * 1_000L
         private const val IDLE_SESSION_REMOVE_MS = 10 * 60 * 1_000L
     }
     private lateinit var windowManager: WindowManager
@@ -179,7 +178,9 @@ class PetOverlayService : Service() {
         val remove = sessions.filterValues { session ->
             val age = (now - eventTimeMs(session)).coerceAtLeast(0L)
             when (moodFor(session)) {
-                "working", "waiting" -> age > ACTIVE_SESSION_REMOVE_MS
+                // Preserve active work across quiet periods/reconnects. A new
+                // terminal hook event, not elapsed wall time, ends the state.
+                "working", "waiting" -> false
                 else -> age > IDLE_SESSION_REMOVE_MS
             }
         }.keys
@@ -268,7 +269,8 @@ class PetOverlayService : Service() {
         return when (name.lowercase().replace("_", "").replace(".", "")) {
             "stop", "done", "sessionend", "agentstop", "afteragent", "turncomplete", "turncompleted",
             "postcascaderesponse", "postcascaderesponsewithtranscript", "sessionidle", "agentend", "sessionshutdown" -> "done"
-            "pretooluse", "permissionrequest", "notification", "waiting", "approvalrequired" -> "waiting"
+            "permissionrequest", "notification", "waiting", "approvalrequired" -> "waiting"
+            "pretooluse", "posttooluse", "userpromptsubmit", "userpromptsubmitted" -> "working"
             // Desktop treats a registered agent as an active animation until
             // its first terminal event. Keep the Android sprite in that mood.
             "sessionstart", "agentspawn", "registered" -> "working"
