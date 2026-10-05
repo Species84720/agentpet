@@ -12,6 +12,7 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Plays the same transparent-gutter spritesheets used by the desktop app.
@@ -25,6 +26,7 @@ class PetSpriteView(context: Context) : View(context) {
     private var animationsEnabled = true
     private var frameDelayMs = 220L
     private var frame = 0
+    private val loadGeneration = AtomicInteger()
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { isFilterBitmap = false }
     private val main = Handler(Looper.getMainLooper())
     private val ticker = object : Runnable {
@@ -44,9 +46,11 @@ class PetSpriteView(context: Context) : View(context) {
     fun configureAnimation(enabled: Boolean, fps: Int) { animationsEnabled = enabled; frameDelayMs = (1000L / fps.coerceIn(1, 12)); if (!enabled) frame = 0; invalidate() }
 
     fun load(url: String, onResult: (Boolean) -> Unit) {
-        Executors.newSingleThreadExecutor().execute {
+        val generation = loadGeneration.incrementAndGet()
+        loader.execute {
             val result = runCatching { slice(download(url)) }.getOrDefault(emptyList())
             main.post {
+                if (generation != loadGeneration.get()) return@post
                 clips = result
                 frame = 0
                 invalidate()
@@ -74,6 +78,7 @@ class PetSpriteView(context: Context) : View(context) {
         canvas.drawBitmap(bitmap, null, android.graphics.RectF((width - w) / 2, (height - h) / 2, (width + w) / 2, (height + h) / 2), paint)
     }
 
+    override fun onAttachedToWindow() { super.onAttachedToWindow(); main.removeCallbacks(ticker); main.post(ticker) }
     override fun onDetachedFromWindow() { main.removeCallbacks(ticker); super.onDetachedFromWindow() }
 
     private fun download(value: String): Bitmap {
@@ -99,6 +104,8 @@ class PetSpriteView(context: Context) : View(context) {
             segments(columns).map { col -> Bitmap.createBitmap(sheet, col.first, row.first, col.last - col.first + 1, row.last - row.first + 1) }.ifEmpty { null }
         }
     }
+
+    private companion object { val loader = Executors.newSingleThreadExecutor() }
 }
 
 data class RemotePet(val name: String, val slug: String, val spritesheetUrl: String)

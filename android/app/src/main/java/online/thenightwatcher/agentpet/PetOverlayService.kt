@@ -3,6 +3,8 @@ package online.thenightwatcher.agentpet
 import android.app.*
 import android.content.*
 import android.graphics.PixelFormat
+import android.graphics.Bitmap
+import android.graphics.drawable.BitmapDrawable
 import android.os.IBinder
 import android.os.Handler
 import android.os.Looper
@@ -12,6 +14,9 @@ import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.widget.FrameLayout
 import android.widget.TextView
+import android.text.SpannableStringBuilder
+import android.text.Spanned
+import android.text.style.ImageSpan
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import org.json.JSONObject
@@ -23,6 +28,7 @@ class PetOverlayService : Service() {
         const val ACTION_CARE_UPDATED = "online.thenightwatcher.agentpet.CARE_UPDATED"
         const val ACTION_PET_CHANGED = "online.thenightwatcher.agentpet.PET_CHANGED"
         const val EXTRA_RELAY_STATUS = "status"
+        private const val DONE_SESSION_IDLE_MS = 30_000L
     }
     private lateinit var windowManager: WindowManager
     private var overlay: FrameLayout? = null
@@ -146,8 +152,13 @@ class PetOverlayService : Service() {
         if (frame.optString("type") == "snapshot") {
             val snapshot = frame.optJSONArray("sessions") ?: return@post
             sessions.clear()
-            for (i in 0 until snapshot.length()) snapshot.optJSONObject(i)?.let { e -> e.optString("sessionId").takeIf(String::isNotBlank)?.let { sessions[it] = e } }
-            sessions.values.lastOrNull()?.let(::renderEvent)
+            for (i in 0 until snapshot.length()) snapshot.optJSONObject(i)?.let { e ->
+                e.optString("sessionId").takeIf(String::isNotBlank)?.let {
+                    if (moodFor(e) == "done" && eventAgeMs(e) > DONE_SESSION_IDLE_MS) e.put("_agentpetMood", "idle")
+                    sessions[it] = e
+                }
+            }
+            sessions.values.maxByOrNull(::eventTimeMs)?.let(::renderEvent)
             return@post
         }
         val event = frame.optJSONObject("event") ?: return@post
@@ -200,36 +211,72 @@ class PetOverlayService : Service() {
         }
     }
     private fun moodFor(event: JSONObject): String {
+        event.optString("_agentpetMood").takeIf { it.isNotBlank() }?.let { return it }
         val name = event.optString("eventName", "idle")
-        return when (name.lowercase()) { "stop", "done", "sessionend", "session_end" -> "done"; "pretooluse", "permissionrequest", "notification", "waiting" -> "waiting"; else -> "working" }
+        return when (name.lowercase().replace("_", "").replace(".", "")) {
+            "stop", "done", "sessionend", "agentstop", "afteragent", "turncomplete", "turncompleted",
+            "postcascaderesponse", "postcascaderesponsewithtranscript", "sessionidle", "agentend", "sessionshutdown" -> "done"
+            "pretooluse", "permissionrequest", "notification", "waiting", "approvalrequired" -> "waiting"
+            // Desktop treats a registered agent as an active animation until
+            // its first terminal event. Keep the Android sprite in that mood.
+            "sessionstart", "agentspawn", "registered" -> "working"
+            else -> "working"
+        }
     }
+    private fun eventTimeMs(event: JSONObject): Long {
+        val raw = event.opt("timestamp")
+        val numeric = (raw as? Number)?.toLong() ?: 0L
+        if (numeric > 0L) return if (numeric < 10_000_000_000L) numeric * 1_000 else numeric
+        val string = raw as? String ?: return 0L
+        return runCatching { java.time.Instant.parse(string).toEpochMilli() }.getOrDefault(0L)
+    }
+    private fun eventAgeMs(event: JSONObject): Long = (System.currentTimeMillis() - eventTimeMs(event)).coerceAtLeast(0L)
     private fun renderEvent(event: JSONObject) {
         val prefs = getSharedPreferences("relay", MODE_PRIVATE)
         val mood = moodFor(event)
         sprite?.setMood(mood)
         val reactive = if (prefs.getBoolean("reactive_bubbles", true)) ActivityPhrases.message(event, prefs.getString("activity_theme", "chef") ?: "chef") else null
-        val message = prefs.getString("message_$mood", "")?.trim().orEmpty().ifBlank { reactive ?: event.optString("message") }.ifBlank {
-            when (mood) { "waiting" -> "I need your input"; "done" -> "All done!"; else -> "Working on it…" }
+        val message = prefs.getString("message_$mood", "")?.trim().orEmpty().ifBlank { event.optString("message").trim().ifBlank { reactive.orEmpty() } }.ifBlank {
+            when (mood) { "waiting" -> "I need your input"; "done" -> "All done!"; "idle" -> "Ready to help"; else -> "Working on it…" }
         }
-        if (!prefs.getBoolean("multi_agent_bubble", true)) { bubble?.text = message; return }
+        if (!prefs.getBoolean("multi_agent_bubble", true)) { bubble?.text = bubbleLine(event, mood, message); return }
         val minState = prefs.getString("bubble_min_state", "all")
         var rows = sessions.values.filter { candidate ->
             val state = moodFor(candidate)
             when (minState) { "working" -> state == "working"; "working_waiting" -> state == "working" || state == "waiting"; "done_above" -> state in setOf("working", "waiting", "done"); else -> true }
         }
-        if (prefs.getString("bubble_grouping", "byKind") == "byKind") rows = rows.distinctBy { it.optString("agentKind") }
+        rows = rows.sortedBy(::eventTimeMs)
+        if (prefs.getString("bubble_grouping", "byKind") == "byKind") rows = rows.groupBy { it.optString("agentKind") }.values.mapNotNull { group -> group.maxByOrNull(::eventTimeMs) }.sortedBy(::eventTimeMs)
         rows = rows.takeLast(prefs.getInt("bubble_max", 5).coerceIn(1, 10))
         val mode = prefs.getString("bubble_mode", "carousel")
         val visible = when (mode) { "carousel" -> if (rows.isEmpty()) rows else listOf(rows[(System.currentTimeMillis() / 3000 % rows.size).toInt()]); "compact" -> rows.take(2); else -> rows }
         val lines = visible.map { row ->
-            val state = moodFor(row); val agent = row.optString("agentKind", "agent").replaceFirstChar { it.uppercase() }
+            val state = moodFor(row)
             val custom = prefs.getString("message_$state", "")?.trim().orEmpty()
-            val detail = custom.takeIf { it.isNotBlank() }
+            val detail = if (state == "idle") "Ready to help" else custom.takeIf { it.isNotBlank() }
+                ?: row.optString("message").trim().takeIf { it.isNotEmpty() }
                 ?: (if (prefs.getBoolean("reactive_bubbles", true)) ActivityPhrases.message(row, prefs.getString("activity_theme", "chef") ?: "chef") else null)
-                ?: row.optString("message").ifBlank { state }
-            "$agent · $detail"
+                ?: state
+            bubbleLine(row, state, detail)
         }.toMutableList()
         if (mode == "compact" && rows.size > 2) lines += "+${rows.size - 2} more active"
-        bubble?.text = lines.ifEmpty { listOf("${event.optString("agentKind", "Agent")} · $message") }.joinToString("\n")
+        bubble?.text = if (lines.isEmpty()) bubbleLine(event, mood, message) else SpannableStringBuilder().apply {
+            lines.forEachIndexed { index, line -> if (index > 0) append("\n"); append(line) }
+        }
+    }
+
+    private fun bubbleLine(event: JSONObject, mood: String, message: String): CharSequence {
+        val kind = event.optString("agentKind", "unknown").lowercase()
+        val agent = event.optString("agentName").takeIf { it.isNotBlank() }
+            ?: kind.replaceFirstChar { it.uppercase() }
+        val project = event.optString("project").trim().trimEnd('/', '\\')
+            .substringAfterLast('/').substringAfterLast('\\').ifBlank { "Agent session" }
+        val line = SpannableStringBuilder("  $agent · $project · $message")
+        val icon = AgentLogos.bitmap(this, kind, (bubble?.textSize ?: 14f).toInt().coerceAtLeast(14))
+        if (icon != null) {
+            val drawable = BitmapDrawable(resources, icon).apply { setBounds(0, 0, icon.width, icon.height) }
+            line.setSpan(ImageSpan(drawable, ImageSpan.ALIGN_CENTER), 0, 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
+        return line
     }
 }

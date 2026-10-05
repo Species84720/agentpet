@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.IntentFilter
 import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
@@ -28,15 +29,15 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val prefs = getSharedPreferences("relay", MODE_PRIVATE)
-        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(48, 56, 48, 56); setBackgroundColor(Color.rgb(17, 22, 32)) }
-        fun heading(value: String) = TextView(this).apply { text = value; textSize = 19f; setTextColor(Color.rgb(143, 221, 104)); setPadding(0, 32, 0, 8) }
+        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(20, 20, 20, 28); setBackgroundColor(Color.rgb(17, 22, 32)) }
+        fun heading(value: String) = TextView(this).apply { text = value; textSize = 20f; setTypeface(typeface, android.graphics.Typeface.BOLD); setTextColor(Color.rgb(143, 221, 104)); setPadding(0, 24, 0, 10) }
         fun choice(label: String, key: String, values: List<String>, default: String) {
             root.addView(TextView(this).apply { text = label; setTextColor(Color.WHITE) })
             root.addView(Spinner(this).apply { adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, values.map { it.replace('_', ' ') }); setSelection(values.indexOf(prefs.getString(key, default)).coerceAtLeast(0)); onItemSelectedListener = object : AdapterView.OnItemSelectedListener { override fun onNothingSelected(p: AdapterView<*>?) = Unit; override fun onItemSelected(p: AdapterView<*>?, v: android.view.View?, pos: Int, id: Long) { prefs.edit().putString(key, values[pos]).apply() } } })
         }
-        root.addView(TextView(this).apply { text = "AgentPet"; textSize = 28f; setTextColor(Color.WHITE) })
-        root.addView(TextView(this).apply { text = "Android Tamagotchi control center"; setTextColor(Color.LTGRAY) })
-        overlayStatus = TextView(this).apply { textSize = 15f; setPadding(16, 16, 16, 16) }
+        root.addView(TextView(this).apply { text = "AgentPet"; textSize = 28f; setTypeface(typeface, android.graphics.Typeface.BOLD); setTextColor(Color.WHITE) })
+        root.addView(TextView(this).apply { text = "Your little coding companion"; setTextColor(Color.LTGRAY); setPadding(0, 2, 0, 12) })
+        overlayStatus = TextView(this).apply { textSize = 14f; setPadding(16, 14, 16, 14); background = panelBackground() }
         root.addView(overlayStatus)
         val endpoint = EditText(this).apply { hint = "https://relay.example.com"; setText(prefs.getString("endpoint", "")) }
         val token = EditText(this).apply { hint = "Companion device token"; setText(prefs.getString("token", "")) }
@@ -49,6 +50,16 @@ class MainActivity : AppCompatActivity() {
         val petSearch = EditText(this).apply { hint = "Search pets by name" }
         val pets = Spinner(this)
         root.addView(petLabel); root.addView(petSearch); root.addView(pets)
+        val petPreview = PetSpriteView(this).apply { configureAnimation(true, 6) }
+        val previewName = TextView(this).apply { text = prefs.getString("pet_name", "Choose a pet") ?: "Choose a pet"; textSize = 18f; setTypeface(typeface, android.graphics.Typeface.BOLD); setTextColor(Color.WHITE); gravity = Gravity.CENTER }
+        val previewCaption = TextView(this).apply { text = "Live animated preview"; setTextColor(Color.LTGRAY); textSize = 13f; gravity = Gravity.CENTER }
+        val previewCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; setPadding(16, 12, 16, 16); background = panelBackground()
+            addView(previewCaption)
+            addView(petPreview, LinearLayout.LayoutParams(220, 190).apply { gravity = Gravity.CENTER })
+            addView(previewName)
+        }
+        root.addView(previewCard, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { setMargins(0, 12, 0, 12) })
         var allPets: List<RemotePet> = emptyList()
         var displayed: List<RemotePet> = emptyList()
         var applyingPetList = false
@@ -71,6 +82,8 @@ class MainActivity : AppCompatActivity() {
                     val selected = displayed[position]
                     prefs.edit().putString("pet_sheet", selected.spritesheetUrl).putString("pet_name", selected.name).putString("pet_slug", selected.slug).apply()
                     petLabel.text = "Selected pet: ${selected.name} (${selected.slug})\n${displayed.size} shown of ${allPets.size}"
+                    previewName.text = selected.name
+                    petPreview.load(selected.spritesheetUrl) { loaded -> if (!loaded) previewCaption.text = "Preview could not be loaded" else previewCaption.text = "Live animated preview" }
                     sendBroadcast(Intent(PetOverlayService.ACTION_PET_CHANGED).setPackage(packageName))
                 }
             }
@@ -79,6 +92,12 @@ class MainActivity : AppCompatActivity() {
             if (loadedPets.isEmpty()) { petLabel.text = "Pet library unavailable — the companion will retry."; return@load }
             allPets = loadedPets
             renderPets(petSearch.text.toString())
+            val chosen = allPets.firstOrNull { it.spritesheetUrl == prefs.getString("pet_sheet", "") } ?: allPets.firstOrNull()
+            chosen?.let {
+                if (prefs.getString("pet_sheet", "").isNullOrBlank()) prefs.edit().putString("pet_sheet", it.spritesheetUrl).putString("pet_name", it.name).putString("pet_slug", it.slug).apply()
+                previewName.text = it.name
+                petPreview.load(it.spritesheetUrl) { loaded -> if (!loaded) previewCaption.text = "Preview could not be loaded" }
+            }
         }
         root.addView(heading("Pet & animation"))
         val sizeLabel = TextView(this)
@@ -198,9 +217,9 @@ class MainActivity : AppCompatActivity() {
         fun select(index: Int) {
             pageHost.removeAllViews()
             pageHost.addView(pageViews[index])
-            tabButtons.forEachIndexed { i, button -> button.setTextColor(if (i == index) Color.rgb(17, 22, 32) else Color.WHITE); button.setBackgroundColor(if (i == index) Color.rgb(143, 221, 104) else Color.rgb(38, 48, 66)) }
+            tabButtons.forEachIndexed { i, button -> button.setTextColor(if (i == index) Color.rgb(17, 22, 32) else Color.WHITE); button.setBackground(if (i == index) tabSelectedBackground() else tabBackground()) }
         }
-        pages.forEachIndexed { index, pair -> tabBar.addView(Button(this).apply { text = pair.first; isAllCaps = false; setOnClickListener { select(index) }; tabButtons += this }) }
+        pages.forEachIndexed { index, pair -> tabBar.addView(Button(this).apply { text = pair.first; isAllCaps = false; minWidth = 0; setPadding(14, 8, 14, 8); setOnClickListener { select(index) }; tabButtons += this }) }
         setContentView(shell)
         select(0)
         showOverlayStatus()
@@ -229,4 +248,7 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "Couldn't start the floating pet: ${error.message ?: "unknown Android error"}", Toast.LENGTH_LONG).show()
         }
     }
+    private fun panelBackground() = GradientDrawable().apply { setColor(Color.rgb(34, 43, 60)); cornerRadius = 22f; setStroke(1, Color.rgb(58, 72, 96)) }
+    private fun tabSelectedBackground() = GradientDrawable().apply { setColor(Color.rgb(143, 221, 104)); cornerRadius = 16f }
+    private fun tabBackground() = GradientDrawable().apply { setColor(Color.rgb(38, 48, 66)); cornerRadius = 16f }
 }
