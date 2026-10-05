@@ -649,8 +649,19 @@ export class BubbleRenderer {
     if (ap.summary) {
       const summary = document.createElement("div");
       summary.className = "approval-summary";
-      summary.textContent = ap.summary;
+      summary.textContent = `Request details:\n${ap.summary}`;
       details.appendChild(summary);
+    }
+    if (ap.execution) {
+      const execution = document.createElement("pre");
+      execution.className = "approval-execution";
+      execution.textContent = `Command / action to execute:\n${ap.execution}`;
+      details.appendChild(execution);
+    } else {
+      const missing = document.createElement("div");
+      missing.className = "approval-no-execution";
+      missing.textContent = "No exact command preview was supplied by the agent.";
+      details.appendChild(missing);
     }
     box.appendChild(details);
     const actions = document.createElement("div");

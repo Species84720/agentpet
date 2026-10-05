@@ -9,7 +9,7 @@ type Device = { token_hash: string; user_id: string; name: string; role: "agent"
 type Event = Record<string, unknown> & { sessionId: string; eventName: string; timestamp?: number };
 type Auth = { userId: string; deviceHash: string; role: Device["role"] };
 type CareDelta = { id?: string; sessionId: string; agentKind?: string; tokens: number; project?: string; createdAt?: number };
-type Approval = { requestId: string; sessionId: string; agentKind: string; toolName: string; summary: string; project?: string; createdAt: number; expiresAt: number; decision?: "allow" | "deny"; resolvedAt?: number; cancelledAt?: number };
+type Approval = { requestId: string; sessionId: string; agentKind: string; toolName: string; summary: string; execution?: string; project?: string; createdAt: number; expiresAt: number; decision?: "allow" | "deny"; resolvedAt?: number; cancelledAt?: number };
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), {
   status, headers: { "content-type": "application/json", "cache-control": "no-store" },
@@ -112,6 +112,7 @@ export default {
       const approval: Approval = {
         requestId: body.requestId, sessionId: body.sessionId.slice(0, 200), agentKind: String(body.agentKind || "codex").slice(0, 32),
         toolName: body.toolName.slice(0, 100), summary: String(body.summary || "").slice(0, 4000),
+        execution: typeof body.execution === "string" ? body.execution.slice(0, 8000) : undefined,
         project: typeof body.project === "string" ? body.project.slice(0, 500) : undefined,
         createdAt: Date.now(), expiresAt: Date.now() + 180_000,
       };

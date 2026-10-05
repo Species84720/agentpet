@@ -21,7 +21,7 @@ export interface Session {
   terminalProgram: string;
   terminalFocusUrl: string;
   /// A gated tool call awaiting the user's Allow/Deny, if any.
-  pendingApproval?: { id: string; tool: string; summary: string };
+  pendingApproval?: { id: string; tool: string; summary: string; execution?: string };
 }
 
 export interface AgentEventPayload {
@@ -94,7 +94,7 @@ export class SessionStore {
   }
 
   /// Attach / clear a pending approval on a session by its id (any agent).
-  setApproval(session: string, approval: { id: string; tool: string; summary: string }) {
+  setApproval(session: string, approval: { id: string; tool: string; summary: string; execution?: string }) {
     this.approvals.set(session, approval);
     for (const s of this.sessions.values()) {
       if (s.session === session) { s.pendingApproval = approval; return; }

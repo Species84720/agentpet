@@ -334,9 +334,9 @@ listen<AgentEventPayload>("agent-event", (e) => {
   render();
 });
 // Approval gate: the daemon parked a gated PreToolUse , show Allow/Deny.
-listen<{ id: string; session: string; tool: string; summary: string }>("agent-approval", (e) => {
+listen<{ id: string; session: string; tool: string; summary: string; execution?: string }>("agent-approval", (e) => {
   const p = e.payload;
-  store.setApproval(p.session, { id: p.id, tool: p.tool, summary: p.summary });
+  store.setApproval(p.session, { id: p.id, tool: p.tool, summary: p.summary, execution: p.execution });
   render();
 });
 listen<{ id: string; session: string }>("agent-approval-resolved", (e) => {

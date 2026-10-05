@@ -452,10 +452,36 @@ class MainActivity : AppCompatActivity() {
                 setTextColor(Color.LTGRAY); setPadding(0, 8, 0, 8)
             })
             val summary = approval.optString("summary")
-            card.addView(TextView(this).apply {
-                text = summary.ifBlank { "No additional details supplied." }; setTextColor(Color.WHITE); textSize = 14f
-                maxLines = 12; setPadding(0, 0, 0, 10)
-            })
+            if (summary.isNotBlank()) {
+                card.addView(TextView(this).apply {
+                    text = "Request details"; setTextColor(Color.LTGRAY); textSize = 12f
+                    setPadding(0, 4, 0, 2)
+                })
+                card.addView(TextView(this).apply {
+                    text = summary; setTextColor(Color.WHITE); textSize = 14f
+                    maxLines = 100; setTextIsSelectable(true); setPadding(0, 0, 0, 10)
+                })
+            }
+            val execution = approval.optString("execution")
+            if (execution.isNotBlank()) {
+                card.addView(TextView(this).apply {
+                    text = "Command / action to execute"; setTextColor(Color.rgb(255, 197, 91)); textSize = 13f
+                    setTypeface(typeface, android.graphics.Typeface.BOLD); setPadding(0, 6, 0, 4)
+                })
+                card.addView(TextView(this).apply {
+                    text = execution; setTextColor(Color.WHITE); textSize = 13f
+                    typeface = android.graphics.Typeface.MONOSPACE
+                    maxLines = 200; setTextIsSelectable(true); setPadding(10, 10, 10, 10)
+                    background = android.graphics.drawable.GradientDrawable().apply {
+                        setColor(Color.rgb(24, 31, 44)); cornerRadius = 10f
+                    }
+                })
+            } else {
+                card.addView(TextView(this).apply {
+                    text = "The agent did not provide an exact command or action preview. Do not approve unless you can verify the requested action in the agent’s own prompt."
+                    setTextColor(Color.rgb(255, 197, 91)); textSize = 14f; setPadding(0, 8, 0, 10)
+                })
+            }
             card.addView(LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL; gravity = Gravity.END
                 addView(Button(this@MainActivity).apply { text = "Reject"; setOnClickListener { submitApprovalDecision(id, "deny") } })

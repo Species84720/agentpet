@@ -38,11 +38,13 @@ object ApprovalNotifications {
         val agent = approval.optString("agentKind", "Agent").ifBlank { "Agent" }
         val tool = approval.optString("toolName", "Action").ifBlank { "Action" }
         val project = approval.optString("project").substringAfterLast('/').ifBlank { "AgentPet" }
-        val summary = approval.optString("summary").take(180)
+        val summary = approval.optString("summary")
+        val execution = approval.optString("execution")
         val detail = buildString {
             append("$tool · $project")
-            if (summary.isNotBlank()) append("\n$summary")
-            append("\nTap to review and respond.")
+            if (summary.isNotBlank()) append("\n\nRequest:\n${summary.take(1_000)}")
+            if (execution.isNotBlank()) append("\n\nCommand / action to execute:\n${execution.take(7_500)}")
+            append("\n\nTap to inspect the full request before responding.")
         }
         val openInputs = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP

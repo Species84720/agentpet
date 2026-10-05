@@ -110,6 +110,8 @@ fn handle_approval(app: AppHandle, body: String, req: tiny_http::Request) {
             .unwrap_or("");
         s.chars().take(4000).collect()
     };
+    let execution: String = v.get("execution").and_then(Value::as_str).unwrap_or("")
+        .chars().take(8000).collect();
     let id = v.get("approvalRequestId").and_then(Value::as_str).map(str::to_owned)
         .unwrap_or_else(|| format!("{}-{}", session, now_millis()));
 
@@ -122,7 +124,7 @@ fn handle_approval(app: AppHandle, body: String, req: tiny_http::Request) {
     handle_event(&app, &body);
     let _ = app.emit(
         "agent-approval",
-        serde_json::json!({ "id": id, "session": session, "tool": tool, "summary": summary }),
+        serde_json::json!({ "id": id, "session": session, "tool": tool, "summary": summary, "execution": execution }),
     );
 
     // Codex gets three minutes for a desktop-pet or phone answer.

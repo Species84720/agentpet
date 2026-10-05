@@ -54,5 +54,24 @@ class RelayJsonTests(unittest.TestCase):
         self.assertIsNone(kwargs["input"])
 
 
+class ApprovalDetailsTests(unittest.TestCase):
+    def test_keeps_exact_command_separate_from_description(self):
+        summary, execution = hook.approval_details({
+            "description": "Run the test suite",
+            "command": "npm test -- --runInBand",
+            "cwd": "/workspace/project",
+        })
+
+        self.assertEqual(summary, "Run the test suite")
+        self.assertIn("npm test -- --runInBand", execution)
+        self.assertIn("Working directory: /workspace/project", execution)
+
+    def test_exposes_command_when_no_description_is_supplied(self):
+        summary, execution = hook.approval_details({"command": "rm generated.tmp"})
+
+        self.assertIn("action details", summary)
+        self.assertEqual(execution, "rm generated.tmp")
+
+
 if __name__ == "__main__":
     unittest.main()

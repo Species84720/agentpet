@@ -135,20 +135,49 @@ def ensure_relay_approval(base_url: str, token: str, approval: dict) -> None:
         time.sleep(5)
 
 
+def approval_details(tool_input: dict) -> tuple[str, str]:
+    """Keep the human explanation separate from the exact action to execute."""
+    raw_execution = next((tool_input.get(key) for key in ("command", "cmd", "script")
+                          if tool_input.get(key) is not None), None)
+    if isinstance(raw_execution, str):
+        execution = raw_execution
+    elif raw_execution is not None:
+        execution = json.dumps(raw_execution, ensure_ascii=False, indent=2)
+    else:
+        execution = json.dumps(tool_input, ensure_ascii=False, indent=2) if tool_input else ""
+    if raw_execution is not None:
+        cwd = tool_input.get("cwd") or tool_input.get("working_directory")
+        if isinstance(cwd, str) and cwd:
+            execution += f"\n\nWorking directory: {cwd}"
+        other_inputs = {key: value for key, value in tool_input.items()
+                        if key not in ("command", "cmd", "script", "description", "cwd", "working_directory")}
+        if other_inputs:
+            execution += "\n\nAdditional tool inputs:\n" + json.dumps(other_inputs, ensure_ascii=False, indent=2)
+    if len(execution) > 8000:
+        execution = execution[:7900] + "\n[… command preview truncated; do not approve until you can inspect the full command …]"
+    description = tool_input.get("description")
+    if isinstance(description, str) and description.strip():
+        summary = description.strip()
+    elif execution:
+        summary = "Review the action details below before deciding."
+    else:
+        summary = json.dumps(tool_input, ensure_ascii=False, indent=2)
+    return summary[:4000], execution
+
+
 def codex_permission_hook(payload: dict, raw_payload: bytes, base_url: str, token: str) -> None:
     """Race the local AgentPet bubble against Android; first decision wins."""
     session_id = payload.get("session_id") or payload.get("conversation_id") or ""
     tool_name = payload.get("tool_name") or "Action"
     tool_input = payload.get("tool_input") if isinstance(payload.get("tool_input"), dict) else {}
-    summary = tool_input.get("description") or tool_input.get("command")
-    if not isinstance(summary, str) or not summary:
-        summary = json.dumps(tool_input, ensure_ascii=False, separators=(",", ":"))
+    summary, execution = approval_details(tool_input)
     # Distinct permission requests can have byte-identical payloads, so avoid
     # reusing a short-lived Durable Object approval ID for a later session.
     request_id = "codex-" + hashlib.sha256(raw_payload).hexdigest()[:32] + "-" + secrets.token_hex(8)
     project = payload.get("cwd") if isinstance(payload.get("cwd"), str) else ""
     approval = {"requestId": request_id, "sessionId": session_id, "agentKind": "Codex",
-                "toolName": str(tool_name)[:100], "summary": summary[:4000], "project": project[:500]}
+                "toolName": str(tool_name)[:100], "summary": summary, "execution": execution,
+                "project": project[:500]}
 
     # Approval details live only in the Durable Object's private state;
     # never append commands or approval payloads to the D1 activity log.
@@ -158,7 +187,7 @@ def codex_permission_hook(payload: dict, raw_payload: bytes, base_url: str, toke
         threading.Thread(target=ensure_relay_approval, args=(base_url, token, approval), daemon=True).start()
     local_event = {"agent": "codex", "event": "PermissionRequest", "session": session_id,
                    "project": project, "message": "Approval required", "tool": str(tool_name),
-                   "desc": summary[:4000], "approvalRequestId": request_id}
+                   "desc": summary, "execution": execution, "approvalRequestId": request_id}
     local_result: queue.Queue = queue.Queue(maxsize=1)
     threading.Thread(target=local_request, args=(local_event, local_result), daemon=True).start()
 
