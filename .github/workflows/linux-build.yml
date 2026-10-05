@@ -52,19 +52,12 @@ jobs:
       - name: Install frontend deps
         run: npm ci
 
-      # On a linux-v* tag, also emit the AppImage updater artifacts (.tar.gz +
-      # .sig) for auto-update. Needs the TAURI_SIGNING_PRIVATE_KEY secret; plain
-      # (workflow_dispatch) builds skip signing and just produce the packages.
+      # Build the installable packages independently of the updater-signing
+      # secret. A malformed/missing signing key must not block publishing the
+      # AppImage, deb, and rpm packages; signed updater artifacts can be added
+      # once TAURI_SIGNING_PRIVATE_KEY is configured correctly.
       - name: Build Tauri app (deb + appimage + rpm)
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
-        run: |
-          if [[ "${{ github.ref }}" == refs/tags/linux-v* ]]; then
-            npm run tauri build -- --bundles deb,appimage,rpm --config '{"bundle":{"createUpdaterArtifacts":true}}'
-          else
-            npm run tauri build -- --bundles deb,appimage,rpm
-          fi
+        run: npm run tauri build -- --bundles deb,appimage,rpm
 
       - name: Upload packages as artifacts
         uses: actions/upload-artifact@v4
@@ -83,5 +76,4 @@ jobs:
           files: |
             windows/src-tauri/target/release/bundle/deb/*.deb
             windows/src-tauri/target/release/bundle/appimage/*.AppImage
-            windows/src-tauri/target/release/bundle/appimage/*.AppImage.sig
             windows/src-tauri/target/release/bundle/rpm/*.rpm
