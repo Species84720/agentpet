@@ -25,7 +25,7 @@ CONFIG = os.environ.get("AGENTPET_RELAY_CONFIG", os.path.expanduser("~/.agentpet
 TIMEOUT_SECONDS = 0.7
 STATE = os.environ.get("AGENTPET_RELAY_USAGE_STATE", os.path.expanduser("~/.agentpet/cloud-relay-codex-usage.json"))
 LOCK = STATE + ".lock"
-APPROVAL_TIMEOUT_SECONDS = 180
+APPROVAL_TIMEOUT_SECONDS = 60
 LOCAL_HOOK_URL = "http://127.0.0.1:47628"
 
 

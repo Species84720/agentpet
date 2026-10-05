@@ -49,6 +49,9 @@ const STALE_REGISTERED_MS = 90_000;
 
 export class SessionStore {
   private sessions = new Map<string, Session>();
+  // Approval events and session events are emitted independently; retain an
+  // approval if it beats its session row to the frontend.
+  private approvals = new Map<string, NonNullable<Session["pendingApproval"]>>();
 
   update(e: AgentEventPayload) {
     const key = `${e.agent}:${e.session}`;
@@ -79,10 +82,12 @@ export class SessionStore {
       stateSince: prev && prev.state === e.state ? prev.stateSince : now,
       terminalProgram: e.terminalProgram || prev?.terminalProgram || "",
       terminalFocusUrl: e.terminalFocusUrl || prev?.terminalFocusUrl || "",
+      pendingApproval: this.approvals.get(e.session) ?? prev?.pendingApproval,
     });
   }
 
   remove(session: string) {
+    this.approvals.delete(session);
     for (const k of [...this.sessions.keys()]) {
       if (k.endsWith(`:${session}`)) this.sessions.delete(k);
     }
@@ -90,11 +95,13 @@ export class SessionStore {
 
   /// Attach / clear a pending approval on a session by its id (any agent).
   setApproval(session: string, approval: { id: string; tool: string; summary: string }) {
+    this.approvals.set(session, approval);
     for (const s of this.sessions.values()) {
       if (s.session === session) { s.pendingApproval = approval; return; }
     }
   }
   clearApproval(session: string) {
+    this.approvals.delete(session);
     for (const s of this.sessions.values()) {
       if (s.session === session) s.pendingApproval = undefined;
     }
@@ -115,6 +122,7 @@ export class SessionStore {
 
   clear() {
     this.sessions.clear();
+    this.approvals.clear();
   }
 
   /// Drop done/stale sessions; returns the list (highest priority first).

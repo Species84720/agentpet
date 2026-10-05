@@ -109,8 +109,9 @@ export interface Group { session: Session; count: number; id: string }
 /// Filter → sort → group → cap (port of AgentBubble.groupedSessions).
 export function groupSessions(sessions: Session[], cfg: BubbleConfig): Group[] {
   const filtered = sessions
-    .filter((s) => !cfg.hidden.includes(s.agent))
-    .filter((s) => filterIncludes(cfg.filter, s.state));
+    // Never hide an unanswered permission prompt behind normal display filters.
+    .filter((s) => !!s.pendingApproval || !cfg.hidden.includes(s.agent))
+    .filter((s) => !!s.pendingApproval || filterIncludes(cfg.filter, s.state));
 
   const sortByKind = cfg.grouping === "byKind" || cfg.sortByKind;
   const sorted = [...filtered].sort((a, b) => {
@@ -630,7 +631,8 @@ export class BubbleRenderer {
   private syncApproval(el: HTMLElement, s: Session) {
     const ap = s.pendingApproval;
     let box = el.querySelector<HTMLElement>(".approval");
-    if (!ap) { box?.remove(); return; }
+    if (!ap) { box?.remove(); el.classList.remove("needs-approval"); return; }
+    el.classList.add("needs-approval");
     if (!box) {
       box = document.createElement("span");
       box.className = "approval";
@@ -639,6 +641,20 @@ export class BubbleRenderer {
     if (box.dataset.id === ap.id) return; // already built for this request
     box.dataset.id = ap.id;
     box.innerHTML = "";
+    const details = document.createElement("div");
+    details.className = "approval-details";
+    const heading = document.createElement("strong");
+    heading.textContent = `Approval needed · ${ap.tool}`;
+    details.appendChild(heading);
+    if (ap.summary) {
+      const summary = document.createElement("div");
+      summary.className = "approval-summary";
+      summary.textContent = ap.summary;
+      details.appendChild(summary);
+    }
+    box.appendChild(details);
+    const actions = document.createElement("div");
+    actions.className = "approval-actions";
     const btn = (label: string, cls: string, decision: string) => {
       const b = document.createElement("button");
       b.className = cls;
@@ -649,7 +665,8 @@ export class BubbleRenderer {
       };
       return b;
     };
-    box.appendChild(btn(t("Allow"), "ap-allow", "allow"));
-    box.appendChild(btn(t("Deny"), "ap-deny", "deny"));
+    actions.appendChild(btn(t("Allow"), "ap-allow", "allow"));
+    actions.appendChild(btn(t("Deny"), "ap-deny", "deny"));
+    box.appendChild(actions);
   }
 }
