@@ -134,6 +134,7 @@ final class AppDaemon: ObservableObject {
                     PetCareController.shared.feedTokens(delta.tokens,
                         petID: AppDaemon.shared.careTarget(forProject: project))
                     ProjectUsageStore.shared.recordTokens(delta.tokens, project: project, agent: "claude", costUSD: delta.costUSD)
+                    Task.detached { CloudRelayPublisher.publishTokens(delta.tokens, sessionId: event.sessionId, agentKind: "claude", project: project) }
                 }
             }
         case .codex:
@@ -159,6 +160,7 @@ final class AppDaemon: ObservableObject {
                 PetCareController.shared.feedTokens(delta.tokens,
                     petID: AppDaemon.shared.careTarget(forProject: project))
                 ProjectUsageStore.shared.recordTokens(delta.tokens, project: project, agent: agent, costUSD: delta.costUSD)
+                Task.detached { CloudRelayPublisher.publishTokens(delta.tokens, sessionId: event.sessionId, agentKind: agent, project: project) }
             }
         }
     }
@@ -186,6 +188,7 @@ final class AppDaemon: ObservableObject {
                 PetCareController.shared.feedTokens(tokens,
                     petID: AppDaemon.shared.careTarget(forProject: project))
                 ProjectUsageStore.shared.recordTokens(tokens, project: project, agent: "codex")
+                Task.detached { CloudRelayPublisher.publishTokens(tokens, sessionId: sid, agentKind: "codex", project: project) }
             }
         }
     }
@@ -214,6 +217,9 @@ final class AppDaemon: ObservableObject {
                 PetCareController.shared.feedTokens(delta?.tokens ?? 0,
                     petID: self.careTarget(forProject: project))
                 ProjectUsageStore.shared.recordTokens(delta?.tokens ?? 0, project: project, agent: "claude", costUSD: delta?.costUSD ?? 0)
+                if let tokens = delta?.tokens, tokens > 0 {
+                    Task.detached { CloudRelayPublisher.publishTokens(tokens, sessionId: sessionId, agentKind: "claude", project: project) }
+                }
                 if isQuestion {
                     self.store.refineState(id: sessionId, from: .done, to: .waiting, since: stateSince)
                 }

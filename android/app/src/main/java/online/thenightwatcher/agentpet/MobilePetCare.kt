@@ -7,7 +7,7 @@ import java.util.Date
 import java.util.Locale
 import kotlin.math.max
 
-/** Phone-local Tamagotchi progression. No desktop/cloud profile sync by design. */
+/** Android Tamagotchi progression, persisted locally and checkpointed to Cloudflare. */
 object MobilePetCare {
     private const val PREFS = "android_pet_care"
     private const val TOKENS_PER_XP = 5_000
@@ -47,18 +47,46 @@ object MobilePetCare {
 
     fun play(context: Context) { val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE); markFed(p); p.edit().putInt("xp", p.getInt("xp", 0) + 10).apply() }
 
+    /** Applies a relay delta once, including after reconnect/retry. */
+    fun applyTokenDelta(context: Context, id: String, tokens: Int): Boolean {
+        if (id.isBlank() || tokens <= 0) return false
+        val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val applied = p.getStringSet("applied_delta_ids", emptySet())?.toMutableSet() ?: mutableSetOf()
+        if (!applied.add(id)) return false
+        while (applied.size > 1_000) applied.remove(applied.first())
+        // Commit the id before feeding so two overlapping live/poll syncs cannot
+        // count the same delta twice in this process.
+        p.edit().putStringSet("applied_delta_ids", applied).commit()
+        feed(context, tokens)
+        return true
+    }
+
+    fun cloudVersion(context: Context): Int = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt("cloud_version", 0)
+    fun setCloudVersion(context: Context, version: Int) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putInt("cloud_version", version).apply()
+
+    fun exportJson(context: Context): JSONObject {
+        val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        rollover(p, today())
+        return JSONObject().apply {
+            listOf("xp", "carry", "tokens_today", "meals_today", "total_tokens", "total_meals", "queries_today", "total_queries", "streak").forEach { put(it, p.getInt(it, 0)) }
+            put("last_fed", p.getLong("last_fed", 0)); put("day", p.getString("day", today())); put("last_fed_day", p.getString("last_fed_day", ""))
+        }
+    }
+
+    fun importJson(context: Context, value: JSONObject) {
+        if (!value.has("xp")) return
+        val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        p.edit().apply {
+            listOf("xp", "carry", "tokens_today", "meals_today", "total_tokens", "total_meals", "queries_today", "total_queries", "streak").forEach { putInt(it, value.optInt(it, 0)) }
+            putLong("last_fed", value.optLong("last_fed", 0)); putString("day", value.optString("day", today())); putString("last_fed_day", value.optString("last_fed_day", ""))
+        }.commit()
+    }
+
     fun recordEvent(context: Context, event: JSONObject) {
         val name = event.optString("eventName").lowercase()
-        if (name in setOf("userpromptsubmit", "user_prompt_submit", "beforeagent", "preinvocation")) {
-            val settings = context.getSharedPreferences("relay", Context.MODE_PRIVATE)
-            if (settings.getBoolean("care_reward_queries", true)) {
-                feed(context, settings.getInt("care_query_tokens", TOKENS_PER_XP).coerceIn(1_000, 25_000))
-                val queryPrefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                queryPrefs.edit().putInt("queries_today", queryPrefs.getInt("queries_today", 0) + 1)
-                    .putInt("total_queries", queryPrefs.getInt("total_queries", 0) + 1).apply()
-            }
-            return
-        }
+        // Prompt events carry no authoritative usage. Tokens arrive separately
+        // from the desktop transcript reader through /v1/care-deltas.
+        if (name in setOf("userpromptsubmit", "user_prompt_submit", "beforeagent", "preinvocation")) return
         if (name !in setOf("stop", "done", "sessionend", "session_end")) return
         val id = event.optString("sessionId"); if (id.isBlank()) return
         val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

@@ -13,6 +13,7 @@ import android.graphics.drawable.GradientDrawable
 import android.widget.FrameLayout
 import android.widget.TextView
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import org.json.JSONObject
 
 /** Messenger-style, user-draggable overlay. It contains no credentials in its UI. */
@@ -20,6 +21,7 @@ class PetOverlayService : Service() {
     companion object {
         const val ACTION_RELAY_STATUS = "online.thenightwatcher.agentpet.RELAY_STATUS"
         const val ACTION_CARE_UPDATED = "online.thenightwatcher.agentpet.CARE_UPDATED"
+        const val ACTION_PET_CHANGED = "online.thenightwatcher.agentpet.PET_CHANGED"
         const val EXTRA_RELAY_STATUS = "status"
     }
     private lateinit var windowManager: WindowManager
@@ -30,6 +32,14 @@ class PetOverlayService : Service() {
     private val sessions = linkedMapOf<String, JSONObject>()
     private val reconnectHandler = Handler(Looper.getMainLooper())
     private val reconnect = Runnable { connect() }
+    private var careSyncing = false
+    private val settingsReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) { if (intent?.action == ACTION_PET_CHANGED) loadSelectedPet() }
+    }
+    override fun onCreate() {
+        super.onCreate()
+        ContextCompat.registerReceiver(this, settingsReceiver, IntentFilter(ACTION_PET_CHANGED), ContextCompat.RECEIVER_NOT_EXPORTED)
+    }
     private var x = 0; private var y = 180
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         runCatching {
@@ -47,7 +57,7 @@ class PetOverlayService : Service() {
         return START_STICKY
     }
     override fun onBind(intent: Intent?): IBinder? = null
-    override fun onDestroy() { reconnectHandler.removeCallbacksAndMessages(null); client?.close(); overlay?.let { windowManager.removeView(it) }; overlay = null; super.onDestroy() }
+    override fun onDestroy() { reconnectHandler.removeCallbacksAndMessages(null); client?.close(); unregisterReceiver(settingsReceiver); overlay?.let { windowManager.removeView(it) }; overlay = null; super.onDestroy() }
     private fun notification(): Notification {
         val channel = NotificationChannel("agentpet", "AgentPet companion", NotificationManager.IMPORTANCE_LOW)
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
@@ -98,11 +108,15 @@ class PetOverlayService : Service() {
             }}
         }
         windowManager.addView(overlay, params)
+        loadSelectedPet()
+    }
+    private fun loadSelectedPet() {
         val relay = getSharedPreferences("relay", MODE_PRIVATE)
         val sheet = relay.getString("pet_sheet", "") ?: ""
-        if (sheet.isNotBlank()) sprite?.load(sheet) { loaded -> if (!loaded) bubble?.text = "Couldn't load this pet" }
+        val name = relay.getString("pet_name", "this pet") ?: "this pet"
+        if (sheet.isNotBlank()) sprite?.load(sheet) { loaded -> if (!loaded) bubble?.text = "Couldn't load $name" }
         else PetCatalog.load { pets -> pets.firstOrNull()?.let { chosen ->
-            relay.edit().putString("pet_sheet", chosen.spritesheetUrl).apply()
+            relay.edit().putString("pet_sheet", chosen.spritesheetUrl).putString("pet_name", chosen.name).putString("pet_slug", chosen.slug).apply()
             sprite?.load(chosen.spritesheetUrl) { loaded -> if (!loaded) bubble?.text = "Couldn't load ${chosen.name}" }
         } }
     }
@@ -114,7 +128,7 @@ class PetOverlayService : Service() {
             prefs.getString("endpoint", "") ?: "",
             prefs.getString("token", "") ?: "",
             { updatePet(it) },
-            { setConnectionStatus("CONNECTED — live updates active") },
+            { setConnectionStatus("CONNECTED — live updates active"); syncCare() },
             { reason -> setConnectionStatus("DISCONNECTED — $reason"); reconnectHandler.removeCallbacks(reconnect); reconnectHandler.postDelayed(reconnect, 5_000) },
         )
         client?.connect()
@@ -125,6 +139,10 @@ class PetOverlayService : Service() {
         if (::windowManager.isInitialized) getSystemService(NotificationManager::class.java).notify(7, notification())
     }
     private fun updatePet(frame: JSONObject) = Handler(mainLooper).post {
+        if (frame.optString("type") == "care_delta") {
+            syncCare()
+            return@post
+        }
         if (frame.optString("type") == "snapshot") {
             val snapshot = frame.optJSONArray("sessions") ?: return@post
             sessions.clear()
@@ -136,7 +154,50 @@ class PetOverlayService : Service() {
         event.optString("sessionId").takeIf(String::isNotBlank)?.let { sessions[it] = event }
         MobilePetCare.recordEvent(this, event)
         sendBroadcast(Intent(ACTION_CARE_UPDATED).setPackage(packageName))
+        if (event.optString("eventName").lowercase() in setOf("stop", "done", "sessionend", "session_end")) syncCare(forceSave = true)
         renderEvent(event)
+    }
+    private fun syncCare(forceSave: Boolean = false) {
+        if (careSyncing) {
+            reconnectHandler.postDelayed({ syncCare(forceSave) }, 1_000)
+            return
+        }
+        val relay = client ?: return
+        careSyncing = true
+        relay.fetchAndroidCare { payload ->
+            Handler(mainLooper).post {
+                if (payload == null) { careSyncing = false; return@post }
+                val remoteVersion = payload.optInt("version", 0)
+                if (remoteVersion > MobilePetCare.cloudVersion(this)) {
+                    MobilePetCare.importJson(this, payload.optJSONObject("care") ?: JSONObject())
+                    MobilePetCare.setCloudVersion(this, remoteVersion)
+                }
+                val deltas = payload.optJSONArray("deltas")
+                val ids = mutableListOf<String>()
+                if (deltas != null) for (i in 0 until deltas.length()) {
+                    val delta = deltas.optJSONObject(i) ?: continue
+                    val id = delta.optString("id")
+                    if (id.isNotBlank()) {
+                        MobilePetCare.applyTokenDelta(this, id, delta.optInt("tokens", 0))
+                        ids += id
+                    }
+                }
+                if (ids.isEmpty() && !forceSave) {
+                    careSyncing = false
+                    sendBroadcast(Intent(ACTION_CARE_UPDATED).setPackage(packageName))
+                    return@post
+                }
+                relay.consumeAndroidCare(remoteVersion, MobilePetCare.exportJson(this), ids) { version ->
+                    Handler(mainLooper).post {
+                        careSyncing = false
+                        if (version != null) {
+                            MobilePetCare.setCloudVersion(this, version)
+                            sendBroadcast(Intent(ACTION_CARE_UPDATED).setPackage(packageName))
+                        } else reconnectHandler.postDelayed({ syncCare(forceSave) }, 2_000)
+                    }
+                }
+            }
+        }
     }
     private fun moodFor(event: JSONObject): String {
         val name = event.optString("eventName", "idle")
@@ -146,7 +207,8 @@ class PetOverlayService : Service() {
         val prefs = getSharedPreferences("relay", MODE_PRIVATE)
         val mood = moodFor(event)
         sprite?.setMood(mood)
-        val message = prefs.getString("message_$mood", "")?.trim().orEmpty().ifBlank { event.optString("message") }.ifBlank {
+        val reactive = if (prefs.getBoolean("reactive_bubbles", true)) ActivityPhrases.message(event, prefs.getString("activity_theme", "chef") ?: "chef") else null
+        val message = prefs.getString("message_$mood", "")?.trim().orEmpty().ifBlank { reactive ?: event.optString("message") }.ifBlank {
             when (mood) { "waiting" -> "I need your input"; "done" -> "All done!"; else -> "Working on it…" }
         }
         if (!prefs.getBoolean("multi_agent_bubble", true)) { bubble?.text = message; return }
@@ -161,7 +223,10 @@ class PetOverlayService : Service() {
         val visible = when (mode) { "carousel" -> if (rows.isEmpty()) rows else listOf(rows[(System.currentTimeMillis() / 3000 % rows.size).toInt()]); "compact" -> rows.take(2); else -> rows }
         val lines = visible.map { row ->
             val state = moodFor(row); val agent = row.optString("agentKind", "agent").replaceFirstChar { it.uppercase() }
-            val detail = row.optString("message").ifBlank { state }
+            val custom = prefs.getString("message_$state", "")?.trim().orEmpty()
+            val detail = custom.takeIf { it.isNotBlank() }
+                ?: (if (prefs.getBoolean("reactive_bubbles", true)) ActivityPhrases.message(row, prefs.getString("activity_theme", "chef") ?: "chef") else null)
+                ?: row.optString("message").ifBlank { state }
             "$agent · $detail"
         }.toMutableList()
         if (mode == "compact" && rows.size > 2) lines += "+${rows.size - 2} more active"

@@ -60,13 +60,19 @@ class MainActivity : AppCompatActivity() {
             val selected = prefs.getString("pet_sheet", "")
             pets.setSelection(displayed.indexOfFirst { it.spritesheetUrl == selected }.coerceAtLeast(0))
             applyingPetList = false
-            petLabel.text = if (displayed.isEmpty()) "No pets match \"${petSearch.text}\"" else "Choose your animated pet (${displayed.size} shown of ${allPets.size})"
+            val selectedPet = allPets.firstOrNull { it.spritesheetUrl == selected }
+            petLabel.text = if (displayed.isEmpty()) "No pets match \"${petSearch.text}\"" else selectedPet?.let { "Selected pet: ${it.name} (${it.slug})\n${displayed.size} shown of ${allPets.size}" } ?: "Choose your animated pet (${displayed.size} shown of ${allPets.size})"
         }
         petSearch.doAfterTextChanged { renderPets(it?.toString() ?: "") }
         pets.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
             override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
             override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
-                if (!applyingPetList && position in displayed.indices) prefs.edit().putString("pet_sheet", displayed[position].spritesheetUrl).apply()
+                if (!applyingPetList && position in displayed.indices) {
+                    val selected = displayed[position]
+                    prefs.edit().putString("pet_sheet", selected.spritesheetUrl).putString("pet_name", selected.name).putString("pet_slug", selected.slug).apply()
+                    petLabel.text = "Selected pet: ${selected.name} (${selected.slug})\n${displayed.size} shown of ${allPets.size}"
+                    sendBroadcast(Intent(PetOverlayService.ACTION_PET_CHANGED).setPackage(packageName))
+                }
             }
         }
         PetCatalog.load { loadedPets ->
@@ -110,8 +116,7 @@ class MainActivity : AppCompatActivity() {
         root.addView(heading("Android pet care"))
         val care = TextView(this).apply { setTextColor(Color.WHITE); textSize = 16f; setPadding(16, 16, 16, 16); setBackgroundColor(Color.rgb(34, 43, 60)) }; careStatus = care
         refreshCareStatus(); root.addView(care)
-        root.addView(CheckBox(this).apply { text = "Award care XP for each query"; isChecked = prefs.getBoolean("care_reward_queries", true); setTextColor(Color.WHITE); setOnCheckedChangeListener { _, checked -> prefs.edit().putBoolean("care_reward_queries", checked).apply() } })
-        val queryRewardLabel = TextView(this); val queryReward = SeekBar(this).apply { max = 24; progress = prefs.getInt("care_query_tokens", 5_000).coerceIn(1_000, 25_000) / 1_000 - 1 }; fun paintQueryReward() { queryRewardLabel.text = "Query reward: ${(queryReward.progress + 1) * 1_000} tokens (${(queryReward.progress + 1) / 5.0} XP)" }; paintQueryReward(); queryReward.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener { override fun onProgressChanged(s: SeekBar?, p: Int, u: Boolean) { prefs.edit().putInt("care_query_tokens", (p + 1) * 1_000).apply(); paintQueryReward() }; override fun onStartTrackingTouch(s: SeekBar?) = Unit; override fun onStopTrackingTouch(s: SeekBar?) = Unit }); root.addView(queryRewardLabel); root.addView(queryReward)
+        root.addView(TextView(this).apply { text = "Real Claude and Codex token usage is queued in Cloudflare. This pet earns 1 XP per 5,000 consumed tokens, including usage accumulated while this phone is offline."; setTextColor(Color.LTGRAY); setPadding(8, 12, 8, 16) })
         root.addView(Button(this).apply { text = "Feed snack (+25K tokens)"; setOnClickListener { MobilePetCare.feed(this@MainActivity); refreshCareStatus() } })
         root.addView(Button(this).apply { text = "Play (+10 XP)"; setOnClickListener { MobilePetCare.play(this@MainActivity); refreshCareStatus() } })
         root.addView(Button(this).apply { text = "Reset Android care"; setOnClickListener { AlertDialog.Builder(this@MainActivity).setTitle("Reset Android care?").setNegativeButton("Cancel", null).setPositiveButton("Reset") { _, _ -> MobilePetCare.reset(this@MainActivity); refreshCareStatus() }.show() } })
@@ -188,10 +193,11 @@ class MainActivity : AppCompatActivity() {
         shell.addView(tabScroll)
         shell.addView(pageHost, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         val pages = listOf("Pet" to petPage, "Bubble" to bubblePage, "Care" to carePage, "History" to historyPage, "Connection" to connectionPage)
+        val pageViews = pages.map { (_, page) -> ScrollView(this).apply { addView(page) } }
         val tabButtons = mutableListOf<Button>()
         fun select(index: Int) {
             pageHost.removeAllViews()
-            pageHost.addView(ScrollView(this).apply { addView(pages[index].second) })
+            pageHost.addView(pageViews[index])
             tabButtons.forEachIndexed { i, button -> button.setTextColor(if (i == index) Color.rgb(17, 22, 32) else Color.WHITE); button.setBackgroundColor(if (i == index) Color.rgb(143, 221, 104) else Color.rgb(38, 48, 66)) }
         }
         pages.forEachIndexed { index, pair -> tabBar.addView(Button(this).apply { text = pair.first; isAllCaps = false; setOnClickListener { select(index) }; tabButtons += this }) }
@@ -213,7 +219,6 @@ class MainActivity : AppCompatActivity() {
     private fun refreshCareStatus() {
         val s = MobilePetCare.state(this)
         careStatus?.text = "${s.stage} · Lv ${s.displayLevel} · ${s.hunger}\nXP ${s.xp} · ${s.progress}% · ${s.tokensToNextLevel} tokens to next level\nToday ${s.tokensToday} tokens · ${s.queriesToday} queries · ${s.mealsToday} sessions\nLifetime ${s.totalTokens} tokens · ${s.totalQueries} queries · ${s.totalMeals} sessions\nStreak ${s.streakDays} days\n\n${s.achievements.ifEmpty { listOf("No achievements yet") }.joinToString("\n")}" }
-    }
     private fun startPet() {
         try {
             startForegroundService(Intent(this, PetOverlayService::class.java))

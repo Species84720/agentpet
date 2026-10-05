@@ -8,6 +8,7 @@ export interface Env {
 type Device = { token_hash: string; user_id: string; name: string; role: "agent" | "companion" };
 type Event = Record<string, unknown> & { sessionId: string; eventName: string; timestamp?: number };
 type Auth = { userId: string; deviceHash: string; role: Device["role"] };
+type CareDelta = { id?: string; sessionId: string; agentKind?: string; tokens: number; project?: string; createdAt?: number };
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), {
   status, headers: { "content-type": "application/json", "cache-control": "no-store" },
@@ -40,6 +41,12 @@ function eventIsValid(value: unknown): value is Event {
   if (!value || typeof value !== "object") return false;
   const e = value as Record<string, unknown>;
   return typeof e.sessionId === "string" && e.sessionId.length > 0 && typeof e.eventName === "string" && e.eventName.length > 0;
+}
+function careDeltaIsValid(value: unknown): value is CareDelta {
+  if (!value || typeof value !== "object") return false;
+  const d = value as Record<string, unknown>;
+  return typeof d.sessionId === "string" && d.sessionId.length > 0
+    && Number.isInteger(d.tokens) && Number(d.tokens) > 0 && Number(d.tokens) <= 100_000_000;
 }
 
 export default {
@@ -94,6 +101,52 @@ export default {
       ]);
       await room(env, auth.userId).fetch("https://room/publish", { method: "POST", body: JSON.stringify({ type: "event", id, event: normalized }) });
       return json({ id, acceptedAt: now }, 202);
+    }
+    if (url.pathname === "/v1/care-deltas" && request.method === "POST") {
+      if (auth.role !== "agent") return json({ error: "agent token required" }, 403);
+      const delta = await request.json<unknown>().catch(() => null);
+      if (!careDeltaIsValid(delta)) return json({ error: "sessionId and a positive integer tokens value are required" }, 400);
+      const now = Date.now();
+      const id = typeof delta.id === "string" && delta.id.length <= 100 ? delta.id : crypto.randomUUID();
+      const createdAt = typeof delta.createdAt === "number" ? delta.createdAt : now;
+      const result = await env.DB.prepare("INSERT OR IGNORE INTO care_deltas (id,user_id,device_hash,session_id,agent_kind,tokens,project,created_at,consumed_at) VALUES (?,?,?,?,?,?,?,?,NULL)")
+        .bind(id, auth.userId, auth.deviceHash, delta.sessionId, String(delta.agentKind || "unknown").slice(0, 32), delta.tokens, delta.project || null, createdAt).run();
+      if (result.meta.changes > 0) {
+        await room(env, auth.userId).fetch("https://room/publish", { method: "POST", body: JSON.stringify({ type: "care_delta", delta: { id, sessionId: delta.sessionId, tokens: delta.tokens, agentKind: delta.agentKind || "unknown", createdAt } }) });
+      }
+      return json({ id, acceptedAt: now, duplicate: result.meta.changes === 0 }, 202);
+    }
+    if (url.pathname === "/v1/android-care" && request.method === "GET") {
+      if (auth.role !== "companion") return json({ error: "companion token required" }, 403);
+      const [care, pending] = await Promise.all([
+        env.DB.prepare("SELECT version,care_json,updated_at FROM android_care WHERE user_id=?").bind(auth.userId).first<any>(),
+        env.DB.prepare("SELECT id,session_id,agent_kind,tokens,project,created_at FROM care_deltas WHERE user_id=? AND consumed_at IS NULL ORDER BY created_at ASC LIMIT 500").bind(auth.userId).all<any>(),
+      ]);
+      return json({
+        version: care?.version ?? 0,
+        care: care ? JSON.parse(care.care_json) : {},
+        updatedAt: care?.updated_at ?? null,
+        deltas: (pending.results || []).map((d: any) => ({ id: d.id, sessionId: d.session_id, agentKind: d.agent_kind, tokens: d.tokens, project: d.project, createdAt: d.created_at })),
+      });
+    }
+    if (url.pathname === "/v1/android-care/consume" && request.method === "POST") {
+      if (auth.role !== "companion") return json({ error: "companion token required" }, 403);
+      const body = await request.json<any>().catch(() => null);
+      if (!body || !Number.isInteger(body.version) || !body.care || typeof body.care !== "object" || !Array.isArray(body.deltaIds)) {
+        return json({ error: "version, care and deltaIds are required" }, 400);
+      }
+      const ids = [...new Set(body.deltaIds.filter((id: unknown) => typeof id === "string" && id.length <= 100))].slice(0, 500) as string[];
+      const current = await env.DB.prepare("SELECT version FROM android_care WHERE user_id=?").bind(auth.userId).first<any>();
+      if ((current?.version ?? 0) !== body.version) return json({ error: "conflict", version: current?.version ?? 0 }, 409);
+      const version = body.version + 1, now = Date.now();
+      const statements = [env.DB.prepare("INSERT INTO android_care (user_id,version,care_json,updated_at) VALUES (?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET version=excluded.version,care_json=excluded.care_json,updated_at=excluded.updated_at")
+        .bind(auth.userId, version, JSON.stringify(body.care), now)];
+      if (ids.length) statements.push(env.DB.prepare(`UPDATE care_deltas SET consumed_at=? WHERE user_id=? AND consumed_at IS NULL AND id IN (${ids.map(() => "?").join(",")})`).bind(now, auth.userId, ...ids));
+      // D1 batch is transactional: token deltas cannot be acknowledged without
+      // the resulting care snapshot being persisted in the same commit.
+      await env.DB.batch(statements);
+      await room(env, auth.userId).fetch("https://room/publish", { method: "POST", body: JSON.stringify({ type: "android_care", version, updatedAt: now }) });
+      return json({ version, updatedAt: now, consumed: ids.length });
     }
     if (url.pathname === "/v1/profile" && request.method === "GET") {
       const row = await env.DB.prepare("SELECT version,profile_json,updated_at FROM pet_profiles WHERE user_id=?").bind(auth.userId).first<any>();

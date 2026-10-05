@@ -2,6 +2,8 @@ package online.thenightwatcher.agentpet
 
 import okhttp3.*
 import org.json.JSONObject
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
 
 class RelayClient(
@@ -45,6 +47,31 @@ class RelayClient(
                 val events = runCatching { JSONObject(it.body?.string() ?: "{}").optJSONArray("events") }
                     .getOrNull()?.let { array -> (0 until array.length()).mapNotNull(array::optJSONObject) }
                 onComplete(events)
+            }
+        })
+    }
+
+    fun fetchAndroidCare(onComplete: (JSONObject?) -> Unit) {
+        val request = Request.Builder().url(endpoint.removeSuffix("/") + "/v1/android-care")
+            .header("Authorization", "Bearer $token").build()
+        client.newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: java.io.IOException) = onComplete(null)
+            override fun onResponse(call: Call, response: Response) = response.use {
+                onComplete(if (it.isSuccessful) runCatching { JSONObject(it.body?.string() ?: "{}") }.getOrNull() else null)
+            }
+        })
+    }
+
+    fun consumeAndroidCare(version: Int, care: JSONObject, deltaIds: List<String>, onComplete: (Int?) -> Unit) {
+        val body = JSONObject().put("version", version).put("care", care).put("deltaIds", org.json.JSONArray(deltaIds))
+        val request = Request.Builder().url(endpoint.removeSuffix("/") + "/v1/android-care/consume")
+            .post(body.toString().toRequestBody("application/json".toMediaType()))
+            .header("Authorization", "Bearer $token").build()
+        client.newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: java.io.IOException) = onComplete(null)
+            override fun onResponse(call: Call, response: Response) = response.use {
+                val result = runCatching { JSONObject(it.body?.string() ?: "{}") }.getOrNull()
+                onComplete(if (it.isSuccessful) result?.optInt("version") else null)
             }
         })
     }

@@ -24,6 +24,9 @@ All authenticated endpoints use `Authorization: Bearer <device-token>`.
 | --- | --- | --- |
 | `POST /v1/devices` | bootstrap secret | Mint an `agent` or `companion` device token |
 | `POST /v1/events` | agent | Persist and broadcast an AgentEvent |
+| `POST /v1/care-deltas` | agent | Queue an idempotent transcript token increment for Android |
+| `GET /v1/android-care` | companion | Read saved Android care and pending token increments |
+| `POST /v1/android-care/consume` | companion | Atomically save care and acknowledge applied increments |
 | `GET/PUT /v1/profile` | any device | Read/update shared pet settings (optimistic `version`) |
 | `GET /v1/events?before=&limit=` | any device | Paginated history; never used for live updates |
 | `DELETE /v1/logs?before=` | any device | Explicitly clear all, or only logs older than epoch-ms `before` |
@@ -36,7 +39,8 @@ history storage without resetting their Tamagotchi.
 
 For live updates, connect `wss://<relay>/v1/live` with the companion token in
 the `Authorization: Bearer` handshake header. The first frame is a
-`snapshot`, followed by `event`, `profile`, and `logs_cleared` frames.
+`snapshot`, followed by `event`, `care_delta`, `android_care`, `profile`, and
+`logs_cleared` frames.
 
 Do not put device tokens in WebSocket query strings: URLs are routinely logged.
 

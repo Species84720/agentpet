@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -35,3 +35,15 @@ jobs:
           name: agentpet-android-debug-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+      - name: Publish installable APK release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk agentpet-android-debug.apk
+          gh release create "android-${GITHUB_RUN_NUMBER}" agentpet-android-debug.apk \
+            --repo "${GITHUB_REPOSITORY}" \
+            --target "${GITHUB_SHA}" \
+            --title "AgentPet Android build ${GITHUB_RUN_NUMBER}" \
+            --notes "Development-signed Android companion APK built from ${GITHUB_SHA}." \
+            --prerelease
