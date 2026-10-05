@@ -284,10 +284,18 @@ class PetOverlayService : Service() {
         return runCatching { java.time.Instant.parse(string).toEpochMilli() }.getOrDefault(event.optLong("storedAt", 0L))
     }
     private fun eventAgeMs(event: JSONObject): Long = (System.currentTimeMillis() - eventTimeMs(event)).coerceAtLeast(0L)
+    /** Match desktop behavior: any still-working session keeps the pet animated,
+     * even if a newer event from another agent has already completed. */
+    private fun aggregateMood(): String = when {
+        sessions.values.any { moodFor(it) == "working" } -> "working"
+        sessions.values.any { moodFor(it) == "waiting" } -> "waiting"
+        sessions.values.any { moodFor(it) == "done" } -> "done"
+        else -> "idle"
+    }
     private fun renderEvent(event: JSONObject) {
         val prefs = getSharedPreferences("relay", MODE_PRIVATE)
         val mood = moodFor(event)
-        sprite?.setMood(mood)
+        sprite?.setMood(aggregateMood())
         val reactive = if (prefs.getBoolean("reactive_bubbles", true)) ActivityPhrases.message(event, prefs.getString("activity_theme", "chef") ?: "chef") else null
         val message = prefs.getString("message_$mood", "")?.trim().orEmpty().ifBlank { event.optString("message").trim().ifBlank { reactive.orEmpty() } }.ifBlank {
             when (mood) { "waiting" -> "I need your input"; "done" -> "All done!"; "idle" -> "Ready to help"; else -> "Working on it…" }

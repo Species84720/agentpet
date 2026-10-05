@@ -11,7 +11,6 @@ import kotlin.math.max
 object MobilePetCare {
     private const val PREFS = "android_pet_care"
     private const val TOKENS_PER_XP = 5_000
-    private const val MEAL_XP = 25
 
     data class State(
         val xp: Int, val tokensToday: Int, val mealsToday: Int,
@@ -38,14 +37,13 @@ object MobilePetCare {
         return State(p.getInt("xp", 0), p.getInt("tokens_today", 0), p.getInt("meals_today", 0), p.getInt("total_tokens", 0), p.getInt("total_meals", 0), p.getInt("queries_today", 0), p.getInt("total_queries", 0), p.getInt("streak", 0), p.getLong("last_fed", 0))
     }
 
-    fun feed(context: Context, tokens: Int = 25_000) {
+    /** Care progression and feeding are driven exclusively by actual token usage. */
+    private fun applyTokenUsage(context: Context, tokens: Int) {
         val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE); rollover(p, today()); markFed(p)
         val carry = p.getInt("carry", 0) + tokens
         p.edit().putInt("carry", carry % TOKENS_PER_XP).putInt("xp", p.getInt("xp", 0) + carry / TOKENS_PER_XP)
             .putInt("tokens_today", p.getInt("tokens_today", 0) + tokens).putInt("total_tokens", p.getInt("total_tokens", 0) + tokens).apply()
     }
-
-    fun play(context: Context) { val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE); markFed(p); p.edit().putInt("xp", p.getInt("xp", 0) + 10).apply() }
 
     /** Applies a relay delta once, including after reconnect/retry. */
     fun applyTokenDelta(context: Context, id: String, tokens: Int): Boolean {
@@ -54,10 +52,10 @@ object MobilePetCare {
         val applied = p.getStringSet("applied_delta_ids", emptySet())?.toMutableSet() ?: mutableSetOf()
         if (!applied.add(id)) return false
         while (applied.size > 1_000) applied.remove(applied.first())
-        // Commit the id before feeding so two overlapping live/poll syncs cannot
+        // Commit the id before applying usage so overlapping live/poll syncs cannot
         // count the same delta twice in this process.
         p.edit().putStringSet("applied_delta_ids", applied).commit()
-        feed(context, tokens)
+        applyTokenUsage(context, tokens)
         return true
     }
 
@@ -136,8 +134,8 @@ object MobilePetCare {
         val seen = p.getStringSet("completed_sessions", emptySet())?.toMutableSet() ?: mutableSetOf()
         if (!seen.add(id)) return false
         while (seen.size > 200) seen.remove(seen.first())
-        rollover(p, today()); markFed(p)
-        p.edit().putStringSet("completed_sessions", seen).putInt("xp", p.getInt("xp", 0) + MEAL_XP)
+        rollover(p, today())
+        p.edit().putStringSet("completed_sessions", seen)
             .putInt("meals_today", p.getInt("meals_today", 0) + 1).putInt("total_meals", p.getInt("total_meals", 0) + 1).apply()
         return true
     }

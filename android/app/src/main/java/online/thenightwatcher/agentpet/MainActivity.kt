@@ -136,8 +136,6 @@ class MainActivity : AppCompatActivity() {
         val care = TextView(this).apply { setTextColor(Color.WHITE); textSize = 16f; setPadding(16, 16, 16, 16); setBackgroundColor(Color.rgb(34, 43, 60)) }; careStatus = care
         refreshCareStatus(); root.addView(care)
         root.addView(TextView(this).apply { text = "Real Claude and Codex token usage is queued in Cloudflare. This pet earns 1 XP per 5,000 consumed tokens, including usage accumulated while this phone is offline."; setTextColor(Color.LTGRAY); setPadding(8, 12, 8, 16) })
-        root.addView(Button(this).apply { text = "Feed snack (+25K tokens)"; setOnClickListener { MobilePetCare.feed(this@MainActivity); refreshCareStatus() } })
-        root.addView(Button(this).apply { text = "Play (+10 XP)"; setOnClickListener { MobilePetCare.play(this@MainActivity); refreshCareStatus() } })
         root.addView(Button(this).apply { text = "Reset Android care"; setOnClickListener { AlertDialog.Builder(this@MainActivity).setTitle("Reset Android care?").setNegativeButton("Cancel", null).setPositiveButton("Reset") { _, _ -> MobilePetCare.reset(this@MainActivity); refreshCareStatus() }.show() } })
 
         root.addView(heading("Connection & history"))
