@@ -1,5 +1,6 @@
 package online.thenightwatcher.agentpet
 
+import android.Manifest
 import android.content.Intent
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -8,6 +9,7 @@ import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
@@ -15,8 +17,10 @@ import android.view.Gravity
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.app.AlertDialog
-import androidx.core.widget.doAfterTextChanged
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.core.widget.doAfterTextChanged
+import android.content.pm.PackageManager
 
 /** Small pairing screen. The floating companion itself is owned by the service. */
 class MainActivity : AppCompatActivity() {
@@ -33,6 +37,7 @@ class MainActivity : AppCompatActivity() {
     private var inputList: LinearLayout? = null
     private var inputConnection: TextView? = null
     private var inputRequestStatus: String? = null
+    private var notificationStatus: TextView? = null
     private var liveApprovals: List<org.json.JSONObject>? = null
     private var inputRelayClient: RelayClient? = null
     private var inputRelayEndpoint: String? = null
@@ -46,6 +51,10 @@ class MainActivity : AppCompatActivity() {
     }
     private var openTab: ((Int) -> Unit)? = null
     private val inputTabIndex = 2
+    private val notificationPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+        refreshNotificationPermissionStatus()
+        if (it) refreshApprovalRequests()
+    }
     private val statusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action == PetOverlayService.ACTION_CARE_UPDATED) refreshCareStatus()
@@ -294,11 +303,28 @@ class MainActivity : AppCompatActivity() {
             setPadding(0, 4, 0, 8)
         }
         connectionPage.addView(updateStatus)
+        notificationStatus = TextView(this).apply {
+            setTextColor(Color.LTGRAY)
+            setPadding(0, 16, 0, 4)
+        }
+        connectionPage.addView(notificationStatus)
+        connectionPage.addView(Button(this).apply {
+            text = "Enable approval notifications"
+            setOnClickListener { requestNotificationPermissionOrSettings() }
+        })
+        refreshNotificationPermissionStatus()
         connectionPage.addView(Button(this).apply {
             text = "Check for updates"
             setOnClickListener { checkForUpdates(force = true) }
         })
         setContentView(shell)
+        window.decorView.post {
+            val prefs = getSharedPreferences("relay", MODE_PRIVATE)
+            if (Build.VERSION.SDK_INT >= 33 && !ApprovalNotifications.enabled(this) && !prefs.getBoolean("approval_notifications_prompted", false)) {
+                prefs.edit().putBoolean("approval_notifications_prompted", true).apply()
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
         refreshInputs()
         select(if (intent.getBooleanExtra(EXTRA_OPEN_INPUTS, false) || intent.hasExtra(EXTRA_APPROVAL_ID)) inputTabIndex else 0)
         showOverlayStatus()
@@ -310,11 +336,33 @@ class MainActivity : AppCompatActivity() {
         setIntent(intent)
         showApprovalIfRequested(intent)
         if (intent.getBooleanExtra(EXTRA_OPEN_INPUTS, false)) openTab?.invoke(inputTabIndex)
+        if (intent.getBooleanExtra(EXTRA_OPEN_INPUTS, false) || intent.hasExtra(EXTRA_APPROVAL_ID)) refreshApprovalRequests()
     }
     private fun showApprovalIfRequested(intent: Intent) {
         val id = intent.getStringExtra(EXTRA_APPROVAL_ID)?.takeIf(String::isNotBlank) ?: return
         intent.removeExtra(EXTRA_APPROVAL_ID)
         openTab?.invoke(inputTabIndex)
+        refreshApprovalRequests()
+    }
+    private fun refreshNotificationPermissionStatus() {
+        notificationStatus?.text = if (ApprovalNotifications.enabled(this))
+            "Approval notifications are enabled. New requests will appear in the phone’s notification shade."
+        else
+            "Approval notifications are disabled. Enable them so requests can alert you while AgentPet is in the background."
+    }
+    private fun requestNotificationPermissionOrSettings() {
+        if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            val prefs = getSharedPreferences("relay", MODE_PRIVATE)
+            val askedBefore = prefs.getBoolean("approval_notifications_prompted", false)
+            if (askedBefore && !shouldShowRequestPermissionRationale(Manifest.permission.POST_NOTIFICATIONS)) {
+                startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
+            } else {
+                prefs.edit().putBoolean("approval_notifications_prompted", true).apply()
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        } else {
+            startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
+        }
     }
     private fun submitApprovalDecision(requestId: String, decision: String) {
         val prefs = getSharedPreferences("relay", MODE_PRIVATE)
@@ -359,8 +407,11 @@ class MainActivity : AppCompatActivity() {
             if (approvals != null) {
                 liveApprovals = approvals
                 val activeIds = approvals.map { it.optString("requestId") }.filter(String::isNotBlank).toSet()
-                ApprovalInbox.all(this).map { it.optString("requestId") }.filterNot(activeIds::contains).forEach { ApprovalInbox.remove(this, it) }
-                approvals.forEach { ApprovalInbox.put(this, it) }
+                ApprovalInbox.all(this).map { it.optString("requestId") }.filterNot(activeIds::contains).forEach {
+                    ApprovalInbox.remove(this, it)
+                    ApprovalNotifications.cancel(this, it)
+                }
+                approvals.forEach { ApprovalInbox.put(this, it); ApprovalNotifications.show(this, it) }
             }
             refreshInputs()
         } }

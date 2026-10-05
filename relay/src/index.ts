@@ -113,7 +113,7 @@ export default {
         requestId: body.requestId, sessionId: body.sessionId.slice(0, 200), agentKind: String(body.agentKind || "codex").slice(0, 32),
         toolName: body.toolName.slice(0, 100), summary: String(body.summary || "").slice(0, 4000),
         project: typeof body.project === "string" ? body.project.slice(0, 500) : undefined,
-        createdAt: Date.now(), expiresAt: Date.now() + 60_000,
+        createdAt: Date.now(), expiresAt: Date.now() + 180_000,
       };
       return room(env, auth.userId).fetch("https://room/approval/create", { method: "POST", body: JSON.stringify(approval) });
     }
@@ -230,10 +230,10 @@ export class PetRoom implements DurableObject {
       this.sessions = new Map(saved || []);
       const approvals = await this.ctx.storage.get<[string, Approval][]>("approvals");
       this.approvals = new Map(approvals || []);
-      // Give in-flight approvals created by the earlier no-expiry Worker build
-      // the same one-minute lifetime as new requests.
+      // Give in-flight approvals created by earlier Worker builds the same
+      // three-minute lifetime as new requests.
       for (const approval of this.approvals.values()) {
-        if (!approval.expiresAt) approval.expiresAt = approval.createdAt + 60_000;
+        if (!approval.expiresAt) approval.expiresAt = approval.createdAt + 180_000;
       }
       await this.scheduleApprovalAlarm();
     });

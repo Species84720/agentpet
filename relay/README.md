@@ -25,7 +25,7 @@ All authenticated endpoints use `Authorization: Bearer <device-token>`.
 | `POST /v1/devices` | bootstrap secret | Mint an `agent` or `companion` device token |
 | `POST /v1/events` | agent | Persist and broadcast an AgentEvent |
 | `POST /v1/care-deltas` | agent | Queue an idempotent transcript token increment for Android |
-| `POST /v1/approvals` | agent | Create a one-minute approval request for paired companions |
+| `POST /v1/approvals` | agent | Create a three-minute approval request for paired companions |
 | `GET /v1/approvals` | companion | List pending approval requests |
 | `GET /v1/approvals/{id}` | agent | Read an approval decision |
 | `POST /v1/approvals/{id}/decision` | paired device | Submit the first allow/deny decision |
@@ -45,7 +45,7 @@ history storage without resetting their Tamagotchi.
 Agent and companion device tokens must be minted with the same `userId`; the
 Worker uses that ID to select the Durable Object room. A companion can report
 `Inbox reachable` while still looking at a different room if its token was
-paired to another `userId`. Approval requests expire after 60 seconds, so
+paired to another `userId`. Approval requests expire after 180 seconds, so
 respond promptly.
 
 For live updates, connect `wss://<relay>/v1/live` with the companion token in

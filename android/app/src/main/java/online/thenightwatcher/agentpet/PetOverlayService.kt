@@ -102,6 +102,9 @@ class PetOverlayService : Service() {
         val multi = getSharedPreferences("relay", MODE_PRIVATE).getBoolean("multi_agent_bubble", true)
         val bubbleHeight = if (multi) 112 else 62
         var expanded = false
+        var lastTapAt = 0L
+        val tapHandler = Handler(Looper.getMainLooper())
+        var singleTap: Runnable? = null
         val params = WindowManager.LayoutParams(spriteSize + 56, spriteSize + bubbleHeight, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT).apply { gravity = Gravity.TOP or Gravity.START; this.x = x; this.y = y }
         overlay = FrameLayout(this).apply {
             bubble = TextView(this@PetOverlayService).apply {
@@ -126,10 +129,24 @@ class PetOverlayService : Service() {
                 MotionEvent.ACTION_MOVE -> { moved = moved || kotlin.math.abs(event.rawX - downX) > 12 || kotlin.math.abs(event.rawY - downY) > 12; params.x = baseX + (event.rawX - downX).toInt(); params.y = baseY + (event.rawY - downY).toInt(); windowManager.updateViewLayout(this, params); true }
                 MotionEvent.ACTION_UP -> {
                     if (!moved) {
-                        startActivity(Intent(this@PetOverlayService, MainActivity::class.java).apply {
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                            putExtra(MainActivity.EXTRA_OPEN_INPUTS, true)
-                        })
+                        val now = android.os.SystemClock.elapsedRealtime()
+                        if (lastTapAt != 0L && now - lastTapAt < android.view.ViewConfiguration.getDoubleTapTimeout()) {
+                            singleTap?.let(tapHandler::removeCallbacks)
+                            singleTap = null
+                            lastTapAt = 0L
+                            startActivity(Intent(this@PetOverlayService, MainActivity::class.java).apply {
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                            })
+                        } else {
+                            lastTapAt = now
+                            singleTap = Runnable {
+                                expanded = !expanded
+                                bubble?.maxLines = if (expanded) 10 else if (multi) 4 else 2
+                                bubble?.layoutParams?.height = if (expanded) 212 else bubbleHeight - 8
+                                params.height = spriteSize + if (expanded) 220 else bubbleHeight
+                                runCatching { overlay?.let { windowManager.updateViewLayout(it, params) } }
+                            }.also { tapHandler.postDelayed(it, android.view.ViewConfiguration.getDoubleTapTimeout().toLong()) }
+                        }
                     }
                     saved.edit().putInt("x", params.x).putInt("y", params.y).apply(); true
                 }
@@ -188,12 +205,14 @@ class PetOverlayService : Service() {
                 pendingApprovals.keys.filterNot(activeIds::contains).toList().forEach { id ->
                     pendingApprovals.remove(id)
                     ApprovalInbox.remove(this, id)
+                    ApprovalNotifications.cancel(this, id)
                 }
                 approvals.forEach { approval ->
                     val id = approval.optString("requestId")
                     if (id.isNotBlank()) {
                         pendingApprovals[id] = JSONObject(approval.toString())
                         ApprovalInbox.put(this, approval)
+                        ApprovalNotifications.show(this, approval)
                     }
                 }
                 if (pendingApprovals.isNotEmpty()) {
@@ -215,6 +234,7 @@ class PetOverlayService : Service() {
                     if (id.isNotBlank()) {
                         pendingApprovals[id] = JSONObject(approval.toString())
                         ApprovalInbox.put(this, approval)
+                        ApprovalNotifications.show(this, approval)
                     }
                     bubble?.text = if (pendingApprovals.size > 1) "${pendingApprovals.size} approval requests · tap pet" else "${approval.optString("agentKind", "Agent")} needs approval · tap pet"
                     sprite?.setMood("waiting")
@@ -227,6 +247,7 @@ class PetOverlayService : Service() {
                 if (id.isNotBlank()) {
                     pendingApprovals.remove(id)
                     ApprovalInbox.remove(this, id)
+                    ApprovalNotifications.cancel(this, id)
                     sendBroadcast(Intent(ACTION_APPROVALS_UPDATED).setPackage(packageName))
                     val expired = frame.optBoolean("expired") || frame.optBoolean("cancelled")
                     if (pendingApprovals.isNotEmpty()) {

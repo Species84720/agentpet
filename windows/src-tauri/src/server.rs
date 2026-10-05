@@ -125,11 +125,11 @@ fn handle_approval(app: AppHandle, body: String, req: tiny_http::Request) {
         serde_json::json!({ "id": id, "session": session, "tool": tool, "summary": summary }),
     );
 
-    // Codex gets a one-minute opportunity for a desktop-pet or phone answer.
+    // Codex gets three minutes for a desktop-pet or phone answer.
     // On timeout, "ask" tells the hook to return no decision so Codex shows its
     // own local permission prompt. Other configured gates remain user-driven.
     let decision = if id.starts_with("codex-") {
-        rx.recv_timeout(std::time::Duration::from_secs(60))
+        rx.recv_timeout(std::time::Duration::from_secs(180))
             .unwrap_or_else(|_| "ask".to_string())
     } else {
         rx.recv().unwrap_or_else(|_| "ask".to_string())
