@@ -237,7 +237,7 @@ class MainActivity : AppCompatActivity() {
     }
     private fun refreshCareStatus() {
         val s = MobilePetCare.state(this)
-        careStatus?.text = "${s.stage} · Lv ${s.displayLevel} · ${s.hunger}\nXP ${s.xp} · ${s.progress}% · ${s.tokensToNextLevel} tokens to next level\nToday ${s.tokensToday} tokens · ${s.queriesToday} queries · ${s.mealsToday} sessions\nLifetime ${s.totalTokens} tokens · ${s.totalQueries} queries · ${s.totalMeals} sessions\nStreak ${s.streakDays} days\n\n${s.achievements.ifEmpty { listOf("No achievements yet") }.joinToString("\n")}" }
+        careStatus?.text = "${s.stage} · Lv ${s.displayLevel} · ${s.hunger}\nXP ${s.xp} · ${s.progress}% · ${s.tokensToNextLevel} tokens to next level\nToday ${s.tokensToday} tokens · ${s.queriesToday} requests · ${s.mealsToday} sessions\nLifetime ${s.totalTokens} tokens · ${s.totalQueries} requests · ${s.totalMeals} sessions\nStreak ${s.streakDays} days\n\n${s.achievements.ifEmpty { listOf("No achievements yet") }.joinToString("\n")}" }
     private fun startPet() {
         try {
             startForegroundService(Intent(this, PetOverlayService::class.java))

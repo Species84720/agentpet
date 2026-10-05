@@ -166,7 +166,9 @@ export default {
     if (url.pathname === "/v1/events" && request.method === "GET") {
       const limit = Math.min(200, Math.max(1, Number(url.searchParams.get("limit") || 50)));
       const before = Number(url.searchParams.get("before") || Date.now());
-      const rows = await env.DB.prepare("SELECT id,event_json,created_at FROM agent_events WHERE user_id=? AND created_at<? ORDER BY created_at DESC LIMIT ?").bind(auth.userId, before, limit).all<any>();
+      const after = Number(url.searchParams.get("after") || 0);
+      if (!Number.isFinite(before) || !Number.isFinite(after)) return json({ error: "before and after must be epoch milliseconds" }, 400);
+      const rows = await env.DB.prepare("SELECT id,event_json,created_at FROM agent_events WHERE user_id=? AND created_at>? AND created_at<? ORDER BY created_at DESC LIMIT ?").bind(auth.userId, after, before, limit).all<any>();
       return json({ events: (rows.results || []).map((r: any) => ({ id: r.id, ...JSON.parse(r.event_json), storedAt: r.created_at })) });
     }
     if (url.pathname === "/v1/logs" && request.method === "DELETE") {

@@ -29,6 +29,8 @@ class PetOverlayService : Service() {
         const val ACTION_PET_CHANGED = "online.thenightwatcher.agentpet.PET_CHANGED"
         const val EXTRA_RELAY_STATUS = "status"
         private const val DONE_SESSION_IDLE_MS = 30_000L
+        private const val ACTIVE_SESSION_REMOVE_MS = 5 * 60 * 1_000L
+        private const val IDLE_SESSION_REMOVE_MS = 10 * 60 * 1_000L
     }
     private lateinit var windowManager: WindowManager
     private var overlay: FrameLayout? = null
@@ -134,7 +136,7 @@ class PetOverlayService : Service() {
             prefs.getString("endpoint", "") ?: "",
             prefs.getString("token", "") ?: "",
             { updatePet(it) },
-            { setConnectionStatus("CONNECTED — live updates active"); syncCare() },
+            { setConnectionStatus("CONNECTED — live updates active"); syncCare { syncRequestHistory() } },
             { reason -> setConnectionStatus("DISCONNECTED — $reason"); reconnectHandler.removeCallbacks(reconnect); reconnectHandler.postDelayed(reconnect, 5_000) },
         )
         client?.connect()
@@ -158,31 +160,78 @@ class PetOverlayService : Service() {
                     sessions[it] = e
                 }
             }
+            pruneSessions()
             sessions.values.maxByOrNull(::eventTimeMs)?.let(::renderEvent)
             return@post
         }
         val event = frame.optJSONObject("event") ?: return@post
         event.optString("sessionId").takeIf(String::isNotBlank)?.let { sessions[it] = event }
-        MobilePetCare.recordEvent(this, event)
-        sendBroadcast(Intent(ACTION_CARE_UPDATED).setPackage(packageName))
-        if (event.optString("eventName").lowercase() in setOf("stop", "done", "sessionend", "session_end")) syncCare(forceSave = true)
+        val careChanged = MobilePetCare.recordEvent(this, event, frame.optString("id"))
+        if (careChanged) {
+            sendBroadcast(Intent(ACTION_CARE_UPDATED).setPackage(packageName))
+            syncCare(forceSave = true)
+        }
+        pruneSessions()
         renderEvent(event)
     }
-    private fun syncCare(forceSave: Boolean = false) {
+    private fun pruneSessions() {
+        val now = System.currentTimeMillis()
+        val remove = sessions.filterValues { session ->
+            val age = (now - eventTimeMs(session)).coerceAtLeast(0L)
+            when (moodFor(session)) {
+                "working", "waiting" -> age > ACTIVE_SESSION_REMOVE_MS
+                else -> age > IDLE_SESSION_REMOVE_MS
+            }
+        }.keys
+        remove.forEach(sessions::remove)
+        sessions.values.forEach { session ->
+            if (moodFor(session) == "done" && eventAgeMs(session) > DONE_SESSION_IDLE_MS) session.put("_agentpetMood", "idle")
+        }
+    }
+    private fun syncRequestHistory() {
+        val relay = client ?: return
+        val after = MobilePetCare.careCheckpoint(this)
+        val collected = mutableListOf<JSONObject>()
+        fun fetchPage(before: Long) {
+            relay.fetchHistory(after, before) { events ->
+                if (events == null) return@fetchHistory
+                collected.addAll(events)
+                if (events.size == 200) {
+                    val oldest = events.minOfOrNull { it.optLong("storedAt", Long.MAX_VALUE) } ?: Long.MIN_VALUE
+                    if (oldest > after && oldest < before) {
+                        fetchPage(oldest)
+                        return@fetchHistory
+                    }
+                }
+                Handler(mainLooper).post {
+                    val changed = collected.fold(false) { anyChanged, event ->
+                        MobilePetCare.recordRequest(this, event, event.optString("id")) || anyChanged
+                    }
+                    if (changed) sendBroadcast(Intent(ACTION_CARE_UPDATED).setPackage(packageName))
+                    // Advance only after every page was retrieved successfully.
+                    syncCare(forceSave = true)
+                }
+            }
+        }
+        fetchPage(System.currentTimeMillis() + 1)
+    }
+    private fun syncCare(forceSave: Boolean = false, onComplete: (() -> Unit)? = null) {
         if (careSyncing) {
-            reconnectHandler.postDelayed({ syncCare(forceSave) }, 1_000)
+            reconnectHandler.postDelayed({ syncCare(forceSave, onComplete) }, 1_000)
             return
         }
         val relay = client ?: return
         careSyncing = true
         relay.fetchAndroidCare { payload ->
             Handler(mainLooper).post {
-                if (payload == null) { careSyncing = false; return@post }
+                if (payload == null) { careSyncing = false; onComplete?.invoke(); return@post }
                 val remoteVersion = payload.optInt("version", 0)
+                val remoteCare = payload.optJSONObject("care") ?: JSONObject()
                 if (remoteVersion > MobilePetCare.cloudVersion(this)) {
-                    MobilePetCare.importJson(this, payload.optJSONObject("care") ?: JSONObject())
+                    MobilePetCare.importJson(this, remoteCare)
                     MobilePetCare.setCloudVersion(this, remoteVersion)
                 }
+                if (remoteCare.optInt("total_queries", 0) > 0) MobilePetCare.setCareCheckpoint(this, payload.optLong("updatedAt", 0L))
                 val deltas = payload.optJSONArray("deltas")
                 val ids = mutableListOf<String>()
                 if (deltas != null) for (i in 0 until deltas.length()) {
@@ -196,15 +245,18 @@ class PetOverlayService : Service() {
                 if (ids.isEmpty() && !forceSave) {
                     careSyncing = false
                     sendBroadcast(Intent(ACTION_CARE_UPDATED).setPackage(packageName))
+                    onComplete?.invoke()
                     return@post
                 }
                 relay.consumeAndroidCare(remoteVersion, MobilePetCare.exportJson(this), ids) { version ->
                     Handler(mainLooper).post {
                         careSyncing = false
                         if (version != null) {
-                            MobilePetCare.setCloudVersion(this, version)
+                            MobilePetCare.setCloudVersion(this, version.optInt("version", remoteVersion))
+                            MobilePetCare.setCareCheckpoint(this, version.optLong("updatedAt", System.currentTimeMillis()))
                             sendBroadcast(Intent(ACTION_CARE_UPDATED).setPackage(packageName))
-                        } else reconnectHandler.postDelayed({ syncCare(forceSave) }, 2_000)
+                            onComplete?.invoke()
+                        } else reconnectHandler.postDelayed({ syncCare(forceSave, onComplete) }, 2_000)
                     }
                 }
             }
@@ -227,8 +279,9 @@ class PetOverlayService : Service() {
         val raw = event.opt("timestamp")
         val numeric = (raw as? Number)?.toLong() ?: 0L
         if (numeric > 0L) return if (numeric < 10_000_000_000L) numeric * 1_000 else numeric
-        val string = raw as? String ?: return 0L
-        return runCatching { java.time.Instant.parse(string).toEpochMilli() }.getOrDefault(0L)
+        val string = raw as? String ?: return event.optLong("storedAt", 0L)
+        string.toLongOrNull()?.takeIf { it > 0L }?.let { return if (it < 10_000_000_000L) it * 1_000 else it }
+        return runCatching { java.time.Instant.parse(string).toEpochMilli() }.getOrDefault(event.optLong("storedAt", 0L))
     }
     private fun eventAgeMs(event: JSONObject): Long = (System.currentTimeMillis() - eventTimeMs(event)).coerceAtLeast(0L)
     private fun renderEvent(event: JSONObject) {

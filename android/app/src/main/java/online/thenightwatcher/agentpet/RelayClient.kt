@@ -38,8 +38,8 @@ class RelayClient(
             override fun onResponse(call: Call, response: Response) { response.use { onComplete(it.isSuccessful) } }
         })
     }
-    fun fetchHistory(onComplete: (List<JSONObject>?) -> Unit) {
-        val request = Request.Builder().url(endpoint.removeSuffix("/") + "/v1/events?limit=50")
+    fun fetchHistory(after: Long = 0L, before: Long = System.currentTimeMillis() + 1, onComplete: (List<JSONObject>?) -> Unit) {
+        val request = Request.Builder().url(endpoint.removeSuffix("/") + "/v1/events?limit=200&after=$after&before=$before")
             .header("Authorization", "Bearer $token").build()
         client.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: java.io.IOException) = onComplete(null)
@@ -62,7 +62,7 @@ class RelayClient(
         })
     }
 
-    fun consumeAndroidCare(version: Int, care: JSONObject, deltaIds: List<String>, onComplete: (Int?) -> Unit) {
+    fun consumeAndroidCare(version: Int, care: JSONObject, deltaIds: List<String>, onComplete: (JSONObject?) -> Unit) {
         val body = JSONObject().put("version", version).put("care", care).put("deltaIds", org.json.JSONArray(deltaIds))
         val request = Request.Builder().url(endpoint.removeSuffix("/") + "/v1/android-care/consume")
             .post(body.toString().toRequestBody("application/json".toMediaType()))
@@ -71,7 +71,7 @@ class RelayClient(
             override fun onFailure(call: Call, e: java.io.IOException) = onComplete(null)
             override fun onResponse(call: Call, response: Response) = response.use {
                 val result = runCatching { JSONObject(it.body?.string() ?: "{}") }.getOrNull()
-                onComplete(if (it.isSuccessful) result?.optInt("version") else null)
+                onComplete(if (it.isSuccessful) result else null)
             }
         })
     }

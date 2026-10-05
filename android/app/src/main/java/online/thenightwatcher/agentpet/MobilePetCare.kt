@@ -63,6 +63,8 @@ object MobilePetCare {
 
     fun cloudVersion(context: Context): Int = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt("cloud_version", 0)
     fun setCloudVersion(context: Context, version: Int) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putInt("cloud_version", version).apply()
+    fun setCareCheckpoint(context: Context, timestamp: Long) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putLong("care_checkpoint", timestamp).apply()
+    fun careCheckpoint(context: Context): Long = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong("care_checkpoint", 0L)
 
     fun exportJson(context: Context): JSONObject {
         val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -82,20 +84,62 @@ object MobilePetCare {
         }.commit()
     }
 
-    fun recordEvent(context: Context, event: JSONObject) {
+    fun recordEvent(context: Context, event: JSONObject, eventId: String = ""): Boolean {
+        if (isRequestEvent(event.optString("eventName"))) return recordRequest(context, event, eventId)
+        return recordCompletion(context, event)
+    }
+
+    /** Counts an agent request without manufacturing token usage or XP. */
+    fun recordRequest(context: Context, event: JSONObject, eventId: String = ""): Boolean {
+        if (!isRequestEvent(event.optString("eventName"))) return false
+        val sessionId = event.optString("sessionId")
+        if (sessionId.isBlank()) return false
+        val name = event.optString("eventName").lowercase()
+        val timestampKey = event.opt("timestamp")?.toString().orEmpty()
+        val id = eventId.ifBlank { "$sessionId:$name:$timestampKey" }
+        val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val seen = p.getStringSet("counted_request_event_ids", emptySet())?.toMutableSet() ?: mutableSetOf()
+        if (!seen.add(id)) return false
+        while (seen.size > 2_000) seen.remove(seen.first())
+        rollover(p, today())
+        val requestDay = eventDay(event)
+        val todayCount = p.getInt("queries_today", 0) + if (requestDay == today()) 1 else 0
+        p.edit().putStringSet("counted_request_event_ids", seen)
+            .putInt("queries_today", todayCount)
+            .putInt("total_queries", p.getInt("total_queries", 0) + 1).apply()
+        return true
+    }
+
+    private fun isRequestEvent(raw: String): Boolean = raw.lowercase().replace("_", "").replace(".", "").replace("-", "") in setOf(
+        "userpromptsubmit", "userpromptsubmitted", "beforeagent", "preinvocation", "beforemodel",
+        "beforesubmitprompt", "preuserprompt", "agentstart", "turnstart",
+    )
+
+    private fun eventDay(event: JSONObject): String {
+        val raw = event.opt("timestamp")
+        val millis = when (raw) {
+            is Number -> raw.toLong().let { if (it in 1 until 10_000_000_000L) it * 1_000 else it }
+            is String -> raw.toLongOrNull()?.let { if (it in 1 until 10_000_000_000L) it * 1_000 else it }
+                ?: runCatching { java.time.Instant.parse(raw).toEpochMilli() }.getOrNull()
+            else -> null
+        } ?: return today()
+        return SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(millis))
+    }
+
+    private fun recordCompletion(context: Context, event: JSONObject): Boolean {
         val name = event.optString("eventName").lowercase()
         // Prompt events carry no authoritative usage. Tokens arrive separately
         // from the desktop transcript reader through /v1/care-deltas.
-        if (name in setOf("userpromptsubmit", "user_prompt_submit", "beforeagent", "preinvocation")) return
-        if (name !in setOf("stop", "done", "sessionend", "session_end")) return
-        val id = event.optString("sessionId"); if (id.isBlank()) return
+        if (name !in setOf("stop", "done", "sessionend", "session_end", "agentstop", "afteragent", "turncomplete", "session.idle", "agent_end")) return false
+        val id = event.optString("sessionId"); if (id.isBlank()) return false
         val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val seen = p.getStringSet("completed_sessions", emptySet())?.toMutableSet() ?: mutableSetOf()
-        if (!seen.add(id)) return
+        if (!seen.add(id)) return false
         while (seen.size > 200) seen.remove(seen.first())
         rollover(p, today()); markFed(p)
         p.edit().putStringSet("completed_sessions", seen).putInt("xp", p.getInt("xp", 0) + MEAL_XP)
             .putInt("meals_today", p.getInt("meals_today", 0) + 1).putInt("total_meals", p.getInt("total_meals", 0) + 1).apply()
+        return true
     }
 
     fun reset(context: Context) { context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().apply() }
