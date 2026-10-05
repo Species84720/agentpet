@@ -4,8 +4,9 @@ android { namespace = "online.thenightwatcher.agentpet"; compileSdk = 35
     defaultConfig {
         applicationId = "online.thenightwatcher.agentpet"; minSdk = 26; targetSdk = 35
         versionCode = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
-        versionName = "0.1.0"
+        versionName = "0.1.0-build${versionCode}"
     }
+    buildFeatures { buildConfig = true }
     // This is intentionally a checked-in development key, not a production
     // release key. GitHub runners are ephemeral; using the default debug key
     // would create a new signer on every run and make Android reject updates.

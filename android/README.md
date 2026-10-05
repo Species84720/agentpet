@@ -19,3 +19,15 @@ The app deliberately shows a persistent notification: Android requires one for
 the foreground service that keeps an overlay alive. Its **Clear cloud activity
 history** control calls `DELETE /v1/logs` after confirmation; it never clears
 the selected pet, settings, or device token.
+
+## App updates
+
+The Connection tab shows the installed version/build and can check for updates.
+AgentPet also checks GitHub Releases when opened (at most once every six hours)
+and offers newer `android-N` builds. **Download & install** downloads the APK
+and opens Android's package installer; Android requires the user to confirm the
+installation, so updates cannot be applied silently. The first update may ask
+you to allow AgentPet to install packages from this source. GitHub Actions uses
+its run number as the Android `versionCode`, and the checked-in development
+signing key allows these prerelease APKs to update one another without losing
+the saved pairing token.

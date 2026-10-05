@@ -26,6 +26,7 @@ class MainActivity : AppCompatActivity() {
     }
     private lateinit var overlayStatus: TextView
     private var careStatus: TextView? = null
+    private var updateStatus: TextView? = null
     private val statusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action == PetOverlayService.ACTION_CARE_UPDATED) refreshCareStatus()
@@ -249,10 +250,28 @@ class MainActivity : AppCompatActivity() {
             tabButtons.forEachIndexed { i, button -> button.setTextColor(if (i == index) Color.rgb(17, 22, 32) else Color.WHITE); button.setBackground(if (i == index) tabSelectedBackground() else tabBackground()) }
         }
         pages.forEachIndexed { index, pair -> tabBar.addView(Button(this).apply { text = pair.first; isAllCaps = false; minWidth = 0; setPadding(14, 8, 14, 8); setOnClickListener { select(index) }; tabButtons += this }) }
+        connectionPage.addView(TextView(this).apply {
+            text = "AgentPet ${BuildConfig.VERSION_NAME} · build ${BuildConfig.VERSION_CODE}"
+            textSize = 14f
+            setTextColor(Color.LTGRAY)
+            setPadding(0, 20, 0, 4)
+        })
+        updateStatus = TextView(this).apply {
+            text = "Checks for updates automatically when the app opens. Android will ask before installing."
+            textSize = 13f
+            setTextColor(Color.LTGRAY)
+            setPadding(0, 4, 0, 8)
+        }
+        connectionPage.addView(updateStatus)
+        connectionPage.addView(Button(this).apply {
+            text = "Check for updates"
+            setOnClickListener { checkForUpdates(force = true) }
+        })
         setContentView(shell)
         select(0)
         showOverlayStatus()
         showApprovalIfRequested(intent)
+        checkForUpdates(force = false, showPrompt = intent.getStringExtra(EXTRA_APPROVAL_ID).isNullOrBlank())
     }
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
@@ -292,7 +311,60 @@ class MainActivity : AppCompatActivity() {
         ContextCompat.registerReceiver(this, statusReceiver, IntentFilter().apply { addAction(PetOverlayService.ACTION_RELAY_STATUS); addAction(PetOverlayService.ACTION_CARE_UPDATED) }, ContextCompat.RECEIVER_NOT_EXPORTED)
         if (::overlayStatus.isInitialized) showOverlayStatus()
     }
+    override fun onResume() {
+        super.onResume()
+        val prefs = getSharedPreferences("relay", MODE_PRIVATE)
+        val build = prefs.getInt("pending_update_build", 0)
+        val url = prefs.getString("pending_update_url", null)
+        if (build > 0 && !url.isNullOrBlank()) {
+            prefs.edit().remove("pending_update_build").remove("pending_update_url").apply()
+            if (AndroidUpdater.canInstallPackages(this)) {
+                beginUpdate(AndroidUpdater.Update(build, "${BuildConfig.VERSION_NAME.substringBefore("-build")}-build$build", url))
+            } else {
+                updateStatus?.text = "Install permission wasn’t enabled. Tap Check for updates to try again."
+            }
+        }
+    }
     override fun onStop() { unregisterReceiver(statusReceiver); super.onStop() }
+    private fun checkForUpdates(force: Boolean, showPrompt: Boolean = true) {
+        val prefs = getSharedPreferences("relay", MODE_PRIVATE)
+        val now = System.currentTimeMillis()
+        if (!force && now - prefs.getLong("last_update_check", 0L) < 6 * 60 * 60 * 1000L) return
+        updateStatus?.text = "Checking GitHub for updates…"
+        AndroidUpdater.check { update, error -> runOnUiThread {
+            if (error == null) prefs.edit().putLong("last_update_check", now).apply()
+            if (error != null) {
+                updateStatus?.text = "Update check failed: $error"
+            } else if (update == null) {
+                updateStatus?.text = "You’re up to date · build ${BuildConfig.VERSION_CODE}"
+            } else {
+                updateStatus?.text = "Update available · build ${update.build}"
+                if (!showPrompt) return@runOnUiThread
+                AlertDialog.Builder(this)
+                    .setTitle("AgentPet update available")
+                    .setMessage("${update.versionName} is ready to download. Android will ask you to confirm installation.")
+                    .setNegativeButton("Later", null)
+                    .setPositiveButton("Download & install") { _, _ -> beginUpdate(update) }
+                    .show()
+            }
+        } }
+    }
+    private fun beginUpdate(update: AndroidUpdater.Update) {
+        if (!AndroidUpdater.canInstallPackages(this)) {
+            getSharedPreferences("relay", MODE_PRIVATE).edit()
+                .putInt("pending_update_build", update.build)
+                .putString("pending_update_url", update.downloadUrl)
+                .apply()
+            updateStatus?.text = "Allow AgentPet to install updates, then return here."
+            startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
+            return
+        }
+        updateStatus?.text = "Downloading build ${update.build}…"
+        AndroidUpdater.downloadAndInstall(this, update) { error -> runOnUiThread {
+            updateStatus?.text = if (error == null) "Downloaded · opening Android installer…" else "Update failed: $error"
+            if (error != null) Toast.makeText(this, error, Toast.LENGTH_LONG).show()
+        } }
+    }
     private fun showOverlayStatus(liveStatus: String? = null) {
         val text = getSharedPreferences("overlay", MODE_PRIVATE).getString("last_error", "") ?: ""
         val connection = liveStatus ?: getSharedPreferences("relay", MODE_PRIVATE).getString("connection_status", "NOT CONNECTED — start the pet to connect")
