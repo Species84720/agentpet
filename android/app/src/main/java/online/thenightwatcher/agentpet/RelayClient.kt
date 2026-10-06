@@ -30,6 +30,28 @@ class RelayClient(
         })
     }
     fun close() { manuallyClosed = true; socket?.close(1000, "stopped"); client.dispatcher.executorService.shutdown() }
+    fun askPetBrain(message: String, pet: JSONObject, onComplete: (JSONObject?, String?) -> Unit) {
+        val body = JSONObject().put("message", message).put("pet", pet)
+        val request = Request.Builder().url(endpoint.removeSuffix("/") + "/v1/pet-brain")
+            .header("Authorization", "Bearer $token").post(body.toString().toRequestBody("application/json".toMediaType())).build()
+        client.newBuilder().readTimeout(75, TimeUnit.SECONDS).callTimeout(80, TimeUnit.SECONDS).build()
+            .newCall(request).enqueue(object : Callback {
+                override fun onFailure(call: Call, e: java.io.IOException) = onComplete(null, "Your pet's AI could not connect. Try again later.")
+                override fun onResponse(call: Call, response: Response) = response.use {
+                    val value = runCatching { JSONObject(it.body?.string().orEmpty()) }.getOrNull()
+                    if (it.isSuccessful && value?.optString("message").isNullOrBlank().not()) onComplete(value, null)
+                    else onComplete(null, value?.optString("error") ?: "The AI flow could not answer.")
+                }
+            })
+    }
+    fun clearPetMemories(onComplete: (Boolean) -> Unit) {
+        val request = Request.Builder().url(endpoint.removeSuffix("/") + "/v1/pet-brain").delete()
+            .header("Authorization", "Bearer $token").build()
+        client.newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: java.io.IOException) = onComplete(false)
+            override fun onResponse(call: Call, response: Response) { response.use { onComplete(it.isSuccessful) } }
+        })
+    }
     fun clearLogs(onComplete: (Boolean) -> Unit) {
         val request = Request.Builder().url(endpoint.removeSuffix("/") + "/v1/logs")
             .delete().header("Authorization", "Bearer $token").build()

@@ -48,6 +48,10 @@ class MainActivity : AppCompatActivity() {
     private var gameFinds: TextView? = null
     private var gameJournal: TextView? = null
     private var gameAgentStatus: TextView? = null
+    private var gameRewards: TextView? = null
+    private var gameRoomCard: LinearLayout? = null
+    private var gameDecor: TextView? = null
+    private var brainBusy = false
     private var enableOverlayButton: Button? = null
     private var gameRuleStatus: TextView? = null
     private var gamePreview: PetSpriteView? = null
@@ -135,7 +139,9 @@ class MainActivity : AppCompatActivity() {
             addView(previewCaption)
             addView(petPreview, LinearLayout.LayoutParams(220, 190).apply { gravity = Gravity.CENTER })
             addView(previewName)
+            gameDecor = TextView(this@MainActivity).apply { textSize = 25f; gravity = Gravity.CENTER; setPadding(0, dp(8), 0, 0) }.also(::addView)
         }
+        gameRoomCard = previewCard
         root.addView(previewCard, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { setMargins(0, 12, 0, 12) })
         var allPets: List<RemotePet> = emptyList()
         var displayed: List<RemotePet> = emptyList()
@@ -241,6 +247,24 @@ class MainActivity : AppCompatActivity() {
             }
         })
         root.addView(Button(this).apply { text = "Stop floating pet"; setOnClickListener { stopService(Intent(this@MainActivity, PetOverlayService::class.java)) } })
+        root.addView(Button(this).apply {
+            text = "Clear pet AI memories"
+            setOnClickListener {
+                val url = endpoint.text.toString().trim(); val secret = token.text.toString().trim()
+                if (Uri.parse(url).scheme !in setOf("http", "https") || Uri.parse(url).host.isNullOrBlank() || secret.isBlank()) {
+                    Toast.makeText(this@MainActivity, "Pair your pet first.", Toast.LENGTH_LONG).show(); return@setOnClickListener
+                }
+                AlertDialog.Builder(this@MainActivity).setTitle("Clear AI memories?")
+                    .setMessage("Your pet's cloud conversation memories will be deleted. Local care and unlocks stay saved.")
+                    .setNegativeButton("Cancel", null).setPositiveButton("Clear") { _, _ ->
+                        val relay = RelayClient(url, secret, onMessage = {})
+                        relay.clearPetMemories { ok -> runOnUiThread {
+                            Toast.makeText(this@MainActivity, if (ok) "AI memories cleared" else "Could not clear memories", Toast.LENGTH_LONG).show()
+                            relay.close()
+                        } }
+                    }.show()
+            }
+        })
         root.addView(Button(this).apply { text = "Show cloud activity history"; setOnClickListener {
             RelayClient(endpoint.text.toString().trim().removeSuffix("/"), token.text.toString().trim(), onMessage = {}).fetchHistory { events -> runOnUiThread {
                 val content = events?.joinToString("\n\n") { "${it.optString("agentKind", "agent")} · ${it.optString("eventName")}\n${it.optString("message", "")}" } ?: "Could not load history. Check pairing and connection."
@@ -408,6 +432,31 @@ class MainActivity : AppCompatActivity() {
             sendBroadcast(Intent(PetOverlayService.ACTION_GAME_CHANGED).setPackage(packageName))
             refreshGameScreen()
         }
+        fun askAi() {
+            val current = MobilePetGame.state(this)
+            if (current.sleeping || brainBusy) return
+            val endpointUrl = prefs.getString("endpoint", "").orEmpty()
+            val deviceToken = prefs.getString("token", "").orEmpty()
+            val uri = Uri.parse(endpointUrl)
+            if (uri.scheme !in setOf("http", "https") || uri.host.isNullOrBlank() || deviceToken.isBlank()) {
+                Toast.makeText(this, "Pair your pet in Settings → Relay first.", Toast.LENGTH_LONG).show(); return
+            }
+            val message = EditText(this).apply { hint = "Tell your pet something…"; maxLines = 4 }
+            AlertDialog.Builder(this).setTitle("Talk to your AI pet").setView(message)
+                .setNegativeButton("Cancel", null).setPositiveButton("Send") { _, _ ->
+                    val text = message.text.toString().trim()
+                    if (text.isNotEmpty() && text.length <= 500 && !MobilePetGame.state(this).sleeping) {
+                        brainBusy = true; previewCaption.text = "Your pet is thinking…"; refreshGameScreen()
+                        val relay = RelayClient(endpointUrl, deviceToken, onMessage = {})
+                        relay.askPetBrain(text, MobilePetGame.brainContext(this)) { answer, error -> runOnUiThread {
+                            brainBusy = false
+                            if (answer != null) reactTo(MobilePetGame.rememberAi(this, answer.optString("message"), answer.optString("mood")))
+                            else { Toast.makeText(this, error ?: "The AI could not answer.", Toast.LENGTH_LONG).show(); refreshGameScreen() }
+                            relay.close()
+                        } }
+                    } else Toast.makeText(this, "Enter a message of 1–500 characters while your pet is awake.", Toast.LENGTH_LONG).show()
+                }.show()
+        }
         fun gameButton(key: String, label: String, emoji: String, action: () -> Unit): Button = Button(this).apply {
             text = "$emoji  $label"; isAllCaps = false; textSize = 14f; setTextColor(Color.WHITE)
             styleMenuButton(this)
@@ -438,6 +487,27 @@ class MainActivity : AppCompatActivity() {
                     reactTo(MobilePetGame.explore(this@MainActivity, destination))
                 }.show()
         }, gameButton("talk", "Talk", "💬") { reactTo(MobilePetGame.talk(this)) })
+        gameRewards = TextView(this).apply {
+            textSize = 14f; setTextColor(Color.rgb(255, 210, 120)); setPadding(dp(8), dp(10), dp(8), dp(14))
+        }.also(gamePage::addView)
+        actionRow(gameButton("room", "Decorate", "🏡") {
+            val rooms = MobilePetGame.Room.values()
+            val bond = MobilePetGame.state(this).bestBond
+            AlertDialog.Builder(this).setTitle("Choose your pet's room")
+                .setItems(rooms.map { if (bond >= it.bondRequired) it.title else "🔒 ${it.title} · ${it.bondRequired}% friendship" }.toTypedArray()) { _, index ->
+                    if (!MobilePetGame.chooseRoom(this, rooms[index])) Toast.makeText(this, "Care for your pet to grow your friendship and unlock this room.", Toast.LENGTH_LONG).show()
+                    refreshGameScreen()
+                }.show()
+        }, gameButton("toys", "Toys", "🧸") {
+            val toys = MobilePetGame.Toy.values(); val bond = MobilePetGame.state(this).bestBond
+            AlertDialog.Builder(this).setTitle("Toy box")
+                .setItems(toys.map { if (bond >= it.bondRequired) it.title else "🔒 ${it.title} · ${it.bondRequired}% friendship" }.toTypedArray()) { _, index -> reactTo(MobilePetGame.playWithToy(this, toys[index])) }.show()
+        })
+        actionRow(gameButton("tricks", "Tricks", "🎩") {
+            val tricks = MobilePetGame.Trick.values(); val bond = MobilePetGame.state(this).bestBond
+            AlertDialog.Builder(this).setTitle("Learned tricks")
+                .setItems(tricks.map { if (bond >= it.bondRequired) it.title else "🔒 ${it.title} · ${it.bondRequired}% friendship" }.toTypedArray()) { _, index -> reactTo(MobilePetGame.performTrick(this, tricks[index])) }.show()
+        }, gameButton("ai", "Ask AI", "💭") { askAi() })
         gamePage.addView(actionGrid)
         val journalCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; setPadding(16, 14, 16, 14); background = panelBackground()
@@ -852,7 +922,14 @@ class MainActivity : AppCompatActivity() {
         enable("nap", !game.sleeping && game.energy < 85)
         enable("explore", game.exploreBlockReason == null)
         enable("talk", !game.sleeping)
-        if (activeMainTab == 0 && System.currentTimeMillis() >= gameReactionUntilAt) {
+        enable("toys", game.playBlockReason == null)
+        enable("tricks", game.playBlockReason == null)
+        enable("ai", !game.sleeping && !brainBusy)
+        val goal = when (game.questAction) { "feed" -> "Share a snack"; "play" -> "Play a game or use a toy"; "groom" -> "Tidy your pet"; "nap" -> "Give your pet a nap"; "explore" -> "Go exploring"; else -> "Have a conversation" }
+        gameRewards?.text = "⭐ ${game.stars} care stars\n${if (game.questComplete) "Today's request complete!" else "Today's request: $goal"}\nGrow friendship to unlock rooms, toys, and tricks."
+        gameRoomCard?.background = GradientDrawable(GradientDrawable.Orientation.TL_BR, game.room.colors).apply { cornerRadius = dp(16).toFloat(); setStroke(dp(1), Color.rgb(92, 111, 138)) }
+        gameDecor?.text = "${game.room.decor}\n${game.room.title}"
+        if (activeMainTab == 0 && !brainBusy && System.currentTimeMillis() >= gameReactionUntilAt) {
             gamePreview?.setMood(game.idleMood)
             gamePreviewCaption?.text = game.activity
         }

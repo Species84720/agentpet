@@ -7,6 +7,8 @@ activity and must be deployed to a separate hostname, for example
 
 ## Deploy
 
+Use Node.js 22 or newer for Wrangler.
+
 1. Create a D1 database and replace `database_id` in `wrangler.jsonc`.
 2. Run `wrangler d1 execute agentpet-relay --remote --file=schema.sql`.
 3. Set the bootstrap secret once: `wrangler secret put PAIRING_SECRET`.
@@ -36,6 +38,7 @@ All authenticated endpoints use `Authorization: Bearer <device-token>`.
 | `GET /v1/events?before=&limit=` | any device | Paginated history; never used for live updates |
 | `DELETE /v1/logs?before=` | any device | Explicitly clear all, or only logs older than epoch-ms `before` |
 | `GET /v1/health` | public | Service health |
+| `GET/POST/DELETE /v1/pet-brain` | companion | Check AI setup, converse, or clear bounded memories |
 
 The Worker automatically prunes event rows older than `LOG_RETENTION_DAYS`
 (30 by default) on ingestion. `DELETE /v1/logs` is intentionally separate from
@@ -73,3 +76,10 @@ hook uses `curl` for all
 Cloudflare approval calls because the deployed edge rejects Python `urllib`
 requests (HTTP 403, error 1010). A relay outage still leaves the desktop pet
 and the agent's native permission prompt available.
+# Optional Power Automate pet brain
+
+See [`../power-automate/README.md`](../power-automate/README.md) for the flow
+generator and prompt. Store the signed flow URL with
+`npx wrangler secret put POWER_AUTOMATE_URL`. `GET/POST/DELETE /v1/pet-brain`
+requires a companion token. Memory is bounded; failed calls count against the
+daily cap. The brain cannot mutate approval decisions or care totals.

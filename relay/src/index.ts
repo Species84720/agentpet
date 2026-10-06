@@ -1,8 +1,11 @@
+import { petBrain } from "./pet-brain";
+
 export interface Env {
   DB: D1Database;
   ROOM: DurableObjectNamespace;
   PAIRING_SECRET: string;
   LOG_RETENTION_DAYS?: string;
+  POWER_AUTOMATE_URL?: string;
 }
 
 type Device = { token_hash: string; user_id: string; name: string; role: "agent" | "companion" };
@@ -71,6 +74,13 @@ export default {
 
     const auth = await authenticate(request, env);
     if (!auth) return json({ error: "unauthorized" }, 401);
+    if (url.pathname === "/v1/pet-brain" && ["GET", "POST", "DELETE"].includes(request.method)) {
+      if (auth.role !== "companion") return json({ error: "companion token required" }, 403);
+      if (Number(request.headers.get("content-length") || 0) > 8192) return json({ error: "request too large" }, 413);
+      const body = request.method === "POST" ? await request.text() : undefined;
+      if (body && textEncoder.encode(body).length > 8192) return json({ error: "request too large" }, 413);
+      return room(env, auth.userId).fetch(new Request("https://room/brain", { method: request.method, body }));
+    }
 
     if (url.pathname === "/v1/live-status" && request.method === "GET") {
       return room(env, auth.userId).fetch("https://room/status");
@@ -222,7 +232,7 @@ export class PetRoom implements DurableObject {
   private sessions = new Map<string, Event>();
   private approvals = new Map<string, Approval>();
   private readonly ready: Promise<void>;
-  constructor(private ctx: DurableObjectState) {
+  constructor(private ctx: DurableObjectState, private env: Env) {
     // Hibernation reconstructs the object while clients remain connected. Reload
     // the compact snapshot before serving a client so reconnect/live state is
     // not dependent on an in-memory map surviving a Worker eviction.
@@ -242,6 +252,7 @@ export class PetRoom implements DurableObject {
   async fetch(request: Request): Promise<Response> {
     await this.ready;
     const path = new URL(request.url).pathname;
+    if (path === "/brain") return petBrain(request, this.ctx.storage, this.env.POWER_AUTOMATE_URL);
     if (path === "/live" || path === "/v1/live") {
       const pair = new WebSocketPair();
       const [client, server] = Object.values(pair);

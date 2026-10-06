@@ -24,6 +24,22 @@ object MobilePetGame {
     }
 
     data class Reaction(val message: String, val mood: String = "celebrate")
+    enum class Room(val title: String, val bondRequired: Int, val colors: IntArray, val decor: String) {
+        NEST("Cozy nest", 0, intArrayOf(0xff29334b.toInt(), 0xff172134.toInt()), "🛏️  🧸  🪴"),
+        GARDEN("Garden hideout", 35, intArrayOf(0xff244d40.toInt(), 0xff142e30.toInt()), "🌻  🪴  🦋  🍄"),
+        SPACE("Star cabin", 50, intArrayOf(0xff493662.toInt(), 0xff1e213b.toInt()), "🌙  ⭐  🚀  🔭"),
+        CASTLE("Tiny castle", 70, intArrayOf(0xff624936.toInt(), 0xff302741.toInt()), "🏰  👑  🕯️  📚")
+    }
+    enum class Toy(val title: String, val bondRequired: Int, val story: String) {
+        BALL("Bouncy ball", 30, "I chased our bouncy ball and caught it with my paws!"),
+        KITE("Rainbow kite", 45, "Our kite danced above the garden. I almost flew too!"),
+        PUZZLE("Treasure puzzle", 60, "I solved our puzzle and found a tiny pretend treasure!")
+    }
+    enum class Trick(val title: String, val bondRequired: Int, val story: String, val mood: String) {
+        DANCE("Happy dance", 35, "Ta-da! I practiced this happy dance just for you!", "celebrate"),
+        BOW("Sleepy bow", 50, "A very dramatic bow... and a little yawn!", "sleepy"),
+        MAGIC("Tiny magic show", 70, "Watch closely! A star appeared from behind my ear!", "done")
+    }
 
     data class State(
         val hunger: Int,
@@ -41,6 +57,11 @@ object MobilePetGame {
         val feeds: Int,
         val playSessions: Int,
         val groomings: Int,
+        val stars: Int,
+        val questAction: String,
+        val questComplete: Boolean,
+        val room: Room,
+        val bestBond: Int,
     ) {
         val sleeping: Boolean get() = sleepRemainingMs > 0
         val overfull: Boolean get() = overfullRemainingMs > 0
@@ -83,6 +104,8 @@ object MobilePetGame {
             (startEnergy + 45 * (now - started).coerceIn(0, NAP_DURATION) / NAP_DURATION).toInt().coerceIn(0, 100)
         } else value(prefs, "energy", now, 82, 6.0)
         val personality = personality(prefs)
+        val questDay = java.time.LocalDate.now().toString()
+        val questAction = listOf("feed", "play", "groom", "nap", "explore", "talk")[(java.time.LocalDate.now().toEpochDay() % 6).toInt()]
         val recent = prefs.getString("activity", "").orEmpty()
             .takeIf { now - prefs.getLong("activity_at", 0L) < AUTONOMY_INTERVAL && it.isNotBlank() }
         val activity = when {
@@ -98,13 +121,17 @@ object MobilePetGame {
         return State(
             hunger, happiness, cleanliness, energy,
             (sleepUntil - now).coerceAtLeast(0L), (overfullUntil - now).coerceAtLeast(0L),
-            prefs.getInt("bond", 28).coerceIn(0, 100), personality, activity,
-            if (sleeping || overfullUntil > now || energy < 35) "sleepy" else "idle",
+            friendship(prefs, now), personality, activity,
+            if (sleeping || overfullUntil > now || energy < 35) "sleepy"
+            else if (prefs.getLong("activity_mood_until", 0L) > now) prefs.getString("activity_mood", "idle") ?: "idle" else "idle",
             prefs.getString("journal", "").orEmpty().lines().filter(String::isNotBlank).take(JOURNAL_LIMIT),
             prefs.getStringSet("finds", emptySet())?.toSet().orEmpty(),
             prefs.getInt("feeds", 0),
             prefs.getInt("play_sessions", 0),
             prefs.getInt("groomings", 0),
+            prefs.getInt("stars", 0), questAction, prefs.getString("quest_completed_day", "") == questDay,
+            runCatching { Room.valueOf(prefs.getString("room", "NEST") ?: "NEST") }.getOrDefault(Room.NEST),
+            maxOf(prefs.getInt("best_bond", prefs.getInt("bond", 28)), friendship(prefs, now)),
         )
     }
 
@@ -129,7 +156,7 @@ object MobilePetGame {
             Personality.DREAMER -> "That was lovely. I shall dream about it."
             Personality.RASCAL -> "Delicious! I definitely did not hide a crumb."
         }
-        remember(prefs, message, 2)
+        remember(prefs, message, 2, "feed")
         prefs.edit().putInt("feeds", current.feeds + 1).apply()
         return Reaction(message)
     }
@@ -141,7 +168,7 @@ object MobilePetGame {
         set(prefs, "happiness", current.happiness + 15)
         set(prefs, "energy", current.energy - 12)
         val message = "That was fun! I want to play again soon."
-        remember(prefs, message, 2)
+        remember(prefs, message, 2, "play")
         prefs.edit().putInt("play_sessions", current.playSessions + 1).apply()
         return Reaction(message)
     }
@@ -154,7 +181,7 @@ object MobilePetGame {
         set(prefs, "cleanliness", current.cleanliness + 35)
         set(prefs, "happiness", current.happiness + 5)
         val message = "All brushed! My little corner looks lovely now."
-        remember(prefs, message, 2)
+        remember(prefs, message, 2, "groom")
         prefs.edit().putInt("groomings", current.groomings + 1).apply()
         return Reaction(message)
     }
@@ -166,7 +193,7 @@ object MobilePetGame {
         if (current.energy >= 85) return Reaction("I am wide awake. Let's do something fun!", "idle")
         startNap(prefs, System.currentTimeMillis(), current.energy)
         val message = "I tucked myself in. Wake me in five minutes!"
-        remember(prefs, message, 1)
+        remember(prefs, message, 1, "nap")
         return Reaction(message, "sleepy")
     }
 
@@ -180,7 +207,7 @@ object MobilePetGame {
         set(prefs, "happiness", current.happiness + if (found) 18 else 8)
         val place = listOf("left", "middle", "right")[hidingPlace.coerceIn(0, 2)]
         val message = if (found) "You found my star! One more round?" else "Hehe, my star was under the $place cup. I had fun anyway!"
-        remember(prefs, message, if (found) 4 else 2)
+        remember(prefs, message, if (found) 4 else 2, "play")
         prefs.edit().putInt("play_sessions", current.playSessions + 1).apply()
         return Reaction(message, if (found) "celebrate" else "idle")
     }
@@ -198,7 +225,7 @@ object MobilePetGame {
         set(prefs, "happiness", current.happiness + 12)
         prefs.edit().putStringSet("finds", finds).apply()
         val message = if (foundNew) "I found a $find for our collection!" else "We visited the ${listOf("garden", "attic", "rooftop")[index]} again. I remembered our first trip!"
-        remember(prefs, message, 3)
+        remember(prefs, message, 3, "explore")
         return Reaction(message)
     }
 
@@ -222,6 +249,49 @@ object MobilePetGame {
         set(prefs, "happiness", current.happiness + 3)
         remember(prefs, message, 1)
         return Reaction(message, "idle")
+    }
+
+    fun chooseRoom(context: Context, room: Room): Boolean {
+        if (state(context).bestBond < room.bondRequired) return false
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString("room", room.name).apply()
+        return true
+    }
+
+    fun playWithToy(context: Context, toy: Toy): Reaction {
+        val current = state(context)
+        current.playBlockReason?.let { return Reaction(it, current.idleMood) }
+        if (current.bestBond < toy.bondRequired) return Reaction("This toy unlocks at ${toy.bondRequired}% friendship.", "idle")
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        set(prefs, "energy", current.energy - 10); set(prefs, "happiness", current.happiness + 12)
+        remember(prefs, toy.story, 2, "play")
+        prefs.edit().putInt("play_sessions", current.playSessions + 1).apply()
+        return Reaction(toy.story)
+    }
+
+    fun performTrick(context: Context, trick: Trick): Reaction {
+        val current = state(context)
+        current.playBlockReason?.let { return Reaction(it, current.idleMood) }
+        if (current.bestBond < trick.bondRequired) return Reaction("This trick unlocks at ${trick.bondRequired}% friendship.", "idle")
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        set(prefs, "energy", current.energy - 6); set(prefs, "happiness", current.happiness + 6)
+        remember(prefs, trick.story, 1, "play")
+        prefs.edit().putString("activity_mood", trick.mood).putLong("activity_mood_until", System.currentTimeMillis() + 8_000).apply()
+        return Reaction(trick.story, trick.mood)
+    }
+
+    fun brainContext(context: Context): org.json.JSONObject {
+        val s = state(context)
+        return org.json.JSONObject().put("personality", s.personality.title).put("hunger", s.hunger)
+            .put("happiness", s.happiness).put("cleanliness", s.cleanliness).put("energy", s.energy)
+            .put("bond", s.bond).put("stars", s.stars).put("sleeping", s.sleeping)
+            .put("diary", org.json.JSONArray(s.journal))
+    }
+
+    fun rememberAi(context: Context, message: String, mood: String): Reaction {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        // A conversation cannot wake the pet, award AI XP, or bypass care rules.
+        remember(prefs, message.take(800), 0)
+        return Reaction(message.take(800), if (mood in listOf("idle", "celebrate", "sleepy")) mood else "idle")
     }
 
     private fun autonomousMoment(prefs: SharedPreferences, now: Long) {
@@ -305,6 +375,8 @@ object MobilePetGame {
         // Existing installs had no visit clock. Start it now instead of
         // inventing a long absence and immediately triggering an idle event.
         if (!prefs.contains("last_interaction_at")) prefs.edit().putLong("last_interaction_at", now).putLong("last_autonomy_at", now).apply()
+        if (!prefs.contains("bond_at")) prefs.edit().putLong("bond_at", now).apply()
+        if (!prefs.contains("best_bond")) prefs.edit().putInt("best_bond", prefs.getInt("bond", 28)).apply()
     }
 
     private fun personality(prefs: SharedPreferences): Personality = runCatching {
@@ -320,11 +392,27 @@ object MobilePetGame {
         return thoughts[((now / (30 * 60_000L)) % thoughts.size).toInt()]
     }
 
-    private fun remember(prefs: SharedPreferences, message: String, bondGain: Int) {
+    private fun remember(prefs: SharedPreferences, message: String, bondGain: Int, action: String = "talk") {
         val now = System.currentTimeMillis()
-        prefs.edit().putInt("bond", (prefs.getInt("bond", 28) + bondGain).coerceAtMost(100))
+        val today = java.time.LocalDate.now()
+        val quest = listOf("feed", "play", "groom", "nap", "explore", "talk")[(today.toEpochDay() % 6).toInt()]
+        val eligible = bondGain > 0 && now - prefs.getLong("reward_$action", 0L) >= 5 * 60_000L
+            && (action != "talk" || (value(prefs, "hunger", now, 78, 5.0) >= 25 && value(prefs, "cleanliness", now, 86, 2.0) >= 25))
+        val completed = eligible && action == quest && prefs.getString("quest_completed_day", "") != today.toString()
+        val bond = (friendship(prefs, now) + (if (eligible) bondGain else 0) + if (completed) 5 else 0).coerceAtMost(100)
+        val editor = prefs.edit()
             .putLong("last_interaction_at", now).putString("activity", message).putLong("activity_at", now)
-            .putString("journal", journalWith(prefs, now, message)).apply()
+            .putString("journal", journalWith(prefs, now, message))
+        if (eligible) editor.putInt("bond", bond).putLong("bond_at", now).putLong("reward_$action", now)
+            .putInt("best_bond", maxOf(prefs.getInt("best_bond", 28), bond))
+        if (action != "talk" && action != "nap" && bondGain > 0) editor.putString("activity_mood", "celebrate").putLong("activity_mood_until", now + 8_000)
+        if (completed) editor.putString("quest_completed_day", today.toString()).putInt("stars", prefs.getInt("stars", 0) + 1)
+        editor.apply()
+    }
+
+    private fun friendship(prefs: SharedPreferences, now: Long): Int {
+        val absentHours = ((now - prefs.getLong("bond_at", now) - 6 * HOUR).coerceAtLeast(0L) / HOUR).toInt().coerceAtMost(30)
+        return (prefs.getInt("bond", 28) - absentHours).coerceIn(0, 100)
     }
 
     private fun journalWith(prefs: SharedPreferences, now: Long, message: String): String {

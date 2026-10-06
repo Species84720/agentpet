@@ -22,6 +22,18 @@ attention. Game actions are stored on the phone and do not grant AI-use XP or
 change Cloudflare care totals. Actual agent token use continues to award level
 XP.
 
+Daily care requests earn stars and a friendship bonus. Friendship unlocks four
+decorated rooms, three toys and three tricks. Use **Decorate**, **Toys**, and
+**Tricks** on Play to choose them; toys and tricks use energy and respect sleep,
+hunger and tummy breaks. Unlocks stay earned. Friendship gently drops after six
+hours without rewarding care (at most 30 points), and each care action grants
+friendship at most once every five minutes to discourage button spam.
+
+**Ask AI** connects to the Power Automate pet brain through the paired relay.
+Follow [`power-automate/README.md`](../power-automate/README.md) to generate and
+configure the flow. AI chat shares only pet context and conversation memories.
+Settings → Relay → **Clear pet AI memories** deletes those cloud memories.
+
 Use **Requests** for pending approval decisions. **Settings** contains the pet,
 animation, bubble, care, history, and relay controls. The floating pet opens
 Settings on a double-tap; a single tap expands or collapses its message bubble.
