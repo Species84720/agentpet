@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cloudflare activity mirror and optional Codex mobile approval bridge."""
+"""Cloudflare activity mirror and mobile approval bridge for local agent CLIs."""
 
 import json
 import hashlib
@@ -165,9 +165,25 @@ def approval_details(tool_input: dict) -> tuple[str, str]:
     return summary[:4000], execution
 
 
+def permission_hook_output(agent: str, decision: str) -> dict:
+    if agent == "codex":
+        return {"hookSpecificOutput": {"hookEventName": "PermissionRequest",
+                                       "decision": {"behavior": decision}}}
+    return {"behavior": decision}
+
+
+def activity_message(payload: dict) -> str | None:
+    for key in ("message", "tool_name", "toolName", "prompt", "initial_prompt",
+                "initialPrompt", "last_assistant_message", "lastAssistantMessage"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
+
+
 def permission_tool_input(payload: dict) -> dict:
-    """Normalize Codex permission payload variants without dropping action details."""
-    for key in ("tool_input", "input", "toolInput", "permission_input"):
+    """Normalize Codex/Copilot permission payloads without dropping action details."""
+    for key in ("tool_input", "input", "toolInput", "toolArgs", "permission_input"):
         value = payload.get(key)
         if isinstance(value, dict):
             return value
@@ -197,17 +213,18 @@ def permission_tool_input(payload: dict) -> dict:
     return {key: value for key, value in payload.items() if key not in metadata}
 
 
-def codex_permission_hook(payload: dict, raw_payload: bytes, base_url: str, token: str) -> None:
+def permission_hook(payload: dict, raw_payload: bytes, base_url: str, token: str,
+                    agent: str = "codex") -> None:
     """Race the local AgentPet bubble against Android; first decision wins."""
-    session_id = payload.get("session_id") or payload.get("conversation_id") or ""
-    tool_name = payload.get("tool_name") or "Action"
+    session_id = payload.get("session_id") or payload.get("sessionId") or payload.get("conversation_id") or ""
+    tool_name = payload.get("tool_name") or payload.get("toolName") or "Action"
     tool_input = permission_tool_input(payload)
     summary, execution = approval_details(tool_input)
     # Distinct permission requests can have byte-identical payloads, so avoid
     # reusing a short-lived Durable Object approval ID for a later session.
-    request_id = "codex-" + hashlib.sha256(raw_payload).hexdigest()[:32] + "-" + secrets.token_hex(8)
+    request_id = agent + "-" + hashlib.sha256(raw_payload).hexdigest()[:32] + "-" + secrets.token_hex(8)
     project = payload.get("cwd") if isinstance(payload.get("cwd"), str) else ""
-    approval = {"requestId": request_id, "sessionId": session_id, "agentKind": "Codex",
+    approval = {"requestId": request_id, "sessionId": session_id, "agentKind": agent.title(),
                 "toolName": str(tool_name)[:100], "summary": summary, "execution": execution,
                 "project": project[:500]}
 
@@ -217,7 +234,7 @@ def codex_permission_hook(payload: dict, raw_payload: bytes, base_url: str, toke
         # Register asynchronously so a relay outage never suppresses the local
         # desktop prompt. Retry to keep the phone in sync when available.
         threading.Thread(target=ensure_relay_approval, args=(base_url, token, approval), daemon=True).start()
-    local_event = {"agent": "codex", "event": "PermissionRequest", "session": session_id,
+    local_event = {"agent": agent, "event": "PermissionRequest", "session": session_id,
                    "project": project, "message": "Approval required", "tool": str(tool_name),
                    "desc": summary, "execution": execution, "approvalRequestId": request_id}
     local_result: queue.Queue = queue.Queue(maxsize=1)
@@ -243,15 +260,14 @@ def codex_permission_hook(payload: dict, raw_payload: bytes, base_url: str, toke
 
     if decision not in ("allow", "deny"):
         # End the mirrored prompts without making a decision. Empty hook output
-        # deliberately hands the still-pending request back to Codex's UI.
+        # deliberately hands the still-pending request back to the agent UI.
         if base_url and token:
             relay_json(base_url + "/v1/approvals/" + request_id + "/cancel", token,
                        {"reason": "local_permission_fallback"}, timeout=2)
         local_cancel(request_id)
         return
 
-    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PermissionRequest",
-                                                "decision": {"behavior": decision}}}))
+    print(json.dumps(permission_hook_output(agent, decision)))
 
 
 def find_rollout(session_id: str, supplied_path: object) -> str | None:
@@ -338,8 +354,8 @@ def main() -> None:
     try:
         raw_payload = sys.stdin.buffer.read()
         payload = json.loads(raw_payload)
-        session_id = payload.get("session_id") or payload.get("conversation_id")
-        event_name = payload.get("hook_event_name")
+        session_id = payload.get("session_id") or payload.get("sessionId") or payload.get("conversation_id")
+        event_name = payload.get("hook_event_name") or payload.get("eventName")
         if not isinstance(session_id, str) or not session_id or not isinstance(event_name, str) or not event_name:
             return
 
@@ -354,8 +370,8 @@ def main() -> None:
             base_url = ""
 
         agent = "copilot" if "--agent" in sys.argv and sys.argv.index("--agent") + 1 < len(sys.argv) and sys.argv[sys.argv.index("--agent") + 1] == "copilot" else "codex"
-        if agent == "codex" and event_name == "PermissionRequest":
-            codex_permission_hook(payload, raw_payload, base_url, token)
+        if event_name in ("PermissionRequest", "permissionRequest") and agent in ("codex", "copilot"):
+            permission_hook(payload, raw_payload, base_url, token, agent)
             return
         if not base_url or not token:
             return
@@ -368,7 +384,7 @@ def main() -> None:
             "agentKind": agent,
             "eventName": event_name,
             "project": payload.get("cwd"),
-            "message": payload.get("message") or payload.get("tool_name"),
+            "message": activity_message(payload),
             "model": model if isinstance(model, str) else None,
             "transcriptPath": payload.get("transcript_path"),
             "subagentId": payload.get("agent_id"),

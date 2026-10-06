@@ -64,9 +64,12 @@ Create `~/.agentpet/cloud-relay.json` on each desktop that emits events:
 ```
 
 Existing hooks continue to write to the local desktop socket and mirror events
-to the relay. Codex permission requests are registered in the Cloudflare room
-with the agent token, then race the desktop pet against Android for up to 60
-seconds; the first allow/deny decision wins. The hook uses `curl` for all
+to the relay. Codex and local Copilot CLI permission requests are registered in
+the Cloudflare room with the agent token, then race the desktop pet against
+Android for up to three minutes; the first allow/deny decision wins. If neither
+answers, the hook falls back to the agent's native permission prompt. Copilot
+Cloud Agent is non-interactive and cannot use this phone approval flow. The
+hook uses `curl` for all
 Cloudflare approval calls because the deployed edge rejects Python `urllib`
 requests (HTTP 403, error 1010). A relay outage still leaves the desktop pet
-and Codex's native permission prompt available.
+and the agent's native permission prompt available.

@@ -122,6 +122,26 @@ npm run tauri build    # NSIS installer + MSI in src-tauri/target/release/bundle
 | GitHub Copilot | `~/.copilot/hooks/agentpet.json`             | Copilot CLI |
 | Kiro CLI       | `~/.kiro/agents/default.json`                | hooks the default agent |
 
+### Copilot Cloudflare approvals (native Windows)
+
+Run from Command Prompt with Windows Python:
+
+```text
+py -3 scripts\install-copilot-windows-hooks.py
+```
+
+The installer discovers the existing relay hook in the default WSL2 distro,
+then adds native Windows Copilot and Codex permission hooks that forward their
+stdin payloads through `wsl.exe` to that hook. It preserves all other hooks and
+does not install a second Windows AgentPet build. Use `--distro <name>` if the
+AgentPet WSL2 distro is not your WSL default. The relay uses
+`~/.agentpet/cloud-relay.json` and the running AgentPet listener inside that
+distro. The WSL relay hook posts each request to Cloudflare; the paired Android
+inbox receives it, and its allow/deny decision returns through Cloudflare to
+the waiting Windows agent. The WSL2 desktop pet can approve too; first answer
+wins. Restart Copilot CLI and Codex after installation. After three minutes,
+the agent's own permission prompt resumes. Copilot Cloud Agent is not supported.
+
 ## Publishing the package manifests
 
 After a `win-v*` release is published:

@@ -28,7 +28,7 @@ fn pending() -> &'static Mutex<HashMap<String, Sender<String>>> {
 
 /// Frontend → daemon: deliver the user's decision to the parked hook request.
 pub fn resolve_approval(_app: &AppHandle, id: &str, decision: &str) {
-    let decision = if id.starts_with("codex-") {
+    let decision = if id.starts_with("codex-") || id.starts_with("copilot-") {
         cloud_approval_decision(id, decision).unwrap_or_else(|| decision.to_string())
     } else { decision.to_string() };
     if let Ok(mut map) = pending().lock() {
@@ -79,7 +79,8 @@ pub fn gated_tools() -> HashSet<String> {
 
 fn is_gated(body: &str) -> bool {
     let Ok(v) = serde_json::from_str::<Value>(body) else { return false };
-    if str_of(&v, "agent") == "codex" && str_of(&v, "event") == "PermissionRequest" {
+    if matches!(str_of(&v, "agent"), "codex" | "copilot")
+        && str_of(&v, "event") == "PermissionRequest" {
         return v.get("approvalRequestId").and_then(Value::as_str).is_some_and(|id| !id.is_empty());
     }
     if str_of(&v, "agent") != "claude" || str_of(&v, "event") != "PreToolUse" {
@@ -127,10 +128,9 @@ fn handle_approval(app: AppHandle, body: String, req: tiny_http::Request) {
         serde_json::json!({ "id": id, "session": session, "tool": tool, "summary": summary, "execution": execution }),
     );
 
-    // Codex gets three minutes for a desktop-pet or phone answer.
-    // On timeout, "ask" tells the hook to return no decision so Codex shows its
-    // own local permission prompt. Other configured gates remain user-driven.
-    let decision = if id.starts_with("codex-") {
+    // Codex and Copilot get three minutes for a desktop-pet or phone answer.
+    // On timeout, "ask" hands control back to the agent's native prompt.
+    let decision = if id.starts_with("codex-") || id.starts_with("copilot-") {
         rx.recv_timeout(std::time::Duration::from_secs(180))
             .unwrap_or_else(|_| "ask".to_string())
     } else {
@@ -175,7 +175,8 @@ pub fn start(app: AppHandle) {
                 let value: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
                 let id = str_of(&value, "id").to_string();
                 let decision = str_of(&value, "decision").to_string();
-                if id.starts_with("codex-") && (decision == "allow" || decision == "deny") {
+                if (id.starts_with("codex-") || id.starts_with("copilot-"))
+                    && (decision == "allow" || decision == "deny") {
                     resolve_approval(&app, &id, &decision);
                     let _ = req.respond(tiny_http::Response::from_string("ok"));
                 } else {
@@ -186,7 +187,7 @@ pub fn start(app: AppHandle) {
             if req.url() == "/cancel" && req.method().as_str() == "POST" {
                 let value: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
                 let id = str_of(&value, "id");
-                if id.starts_with("codex-") {
+                if id.starts_with("codex-") || id.starts_with("copilot-") {
                     cancel_approval(id);
                     let _ = req.respond(tiny_http::Response::from_string("ok"));
                 } else {
