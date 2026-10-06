@@ -63,3 +63,14 @@ test('flow failures consume quota; clearing memory does not reset quota', async 
   assert.equal(await storage.get('brain_memories'), undefined);
   assert.equal((await storage.get('brain_usage')).count, 1);
 });
+
+test('clearing memories while AI is answering prevents restoring its memory', async t => {
+  const storage = store({ brain_memories: ['old'] });
+  t.mock.method(globalThis, 'fetch', async () => {
+    await petBrain(new Request('https://room/brain', { method: 'DELETE' }), storage);
+    return Response.json({ message: 'Hello', memory: 'Late memory' });
+  });
+  const response = await petBrain(request({ message: 'Hello' }), storage, 'https://flow.example');
+  assert.equal(response.status, 200);
+  assert.equal(await storage.get('brain_memories'), undefined);
+});

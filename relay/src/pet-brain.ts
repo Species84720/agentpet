@@ -3,7 +3,10 @@ export async function petBrain(request: Request, storage: DurableObjectStorage, 
   const reply = (body: unknown, status = 200) => Response.json(body, { status, headers: { "cache-control": "no-store" } });
   if (request.method === "GET") return reply({ configured: !!flowUrl });
   if (request.method === "DELETE") {
-    await storage.delete("brain_memories");
+    await storage.transaction(async txn => {
+      await txn.put("brain_memory_revision", (await txn.get<number>("brain_memory_revision") || 0) + 1);
+      await txn.delete("brain_memories");
+    });
     return reply({ cleared: true });
   }
   if (!flowUrl) return reply({ error: "The Power Automate flow has not been configured yet." }, 503);
@@ -25,7 +28,10 @@ export async function petBrain(request: Request, storage: DurableObjectStorage, 
   pet.personality = String(source.personality || "Scout").slice(0, 30);
   pet.sleeping = source.sleeping === true;
   pet.diary = Array.isArray(source.diary) ? source.diary.slice(0, 6).map(x => String(x).slice(0, 250)) : [];
-  const memories = await storage.get<string[]>("brain_memories") || [];
+  const { memories, memoryRevision } = await storage.transaction(async txn => ({
+    memories: await txn.get<string[]>("brain_memories") || [],
+    memoryRevision: await txn.get<number>("brain_memory_revision") || 0,
+  }));
   try {
     const response = await fetch(flowUrl, {
       method: "POST", headers: { "content-type": "application/json" },
@@ -38,6 +44,7 @@ export async function petBrain(request: Request, storage: DurableObjectStorage, 
     const mood = ["idle", "celebrate", "sleepy"].includes(raw.mood) ? raw.mood : "idle";
     const memory = typeof raw.memory === "string" ? raw.memory.trim().slice(0, 250) : "";
     if (memory) await storage.transaction(async txn => {
+      if ((await txn.get<number>("brain_memory_revision") || 0) !== memoryRevision) return;
       const current = await txn.get<string[]>("brain_memories") || [];
       await txn.put("brain_memories", [...current, memory].slice(-12));
     });
