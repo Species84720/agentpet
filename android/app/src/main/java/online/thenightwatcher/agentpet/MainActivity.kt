@@ -361,7 +361,7 @@ class MainActivity : AppCompatActivity() {
             text = "$emoji  $label"; isAllCaps = false; textSize = 14f; setTextColor(Color.WHITE)
             background = GradientDrawable().apply { setColor(Color.rgb(42, 54, 73)); cornerRadius = 18f; setStroke(1, Color.rgb(68, 84, 108)) }
             setPadding(8, 10, 8, 10); minHeight = 52
-            setOnClickListener(action)
+            setOnClickListener { action() }
         }
         fun actionRow(first: Button, second: Button) {
             actionGrid.addView(LinearLayout(this).apply {
