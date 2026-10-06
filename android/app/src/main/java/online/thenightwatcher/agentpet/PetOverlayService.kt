@@ -29,6 +29,7 @@ class PetOverlayService : Service() {
         const val ACTION_APPROVALS_UPDATED = "online.thenightwatcher.agentpet.APPROVALS_UPDATED"
         const val ACTION_PET_CHANGED = "online.thenightwatcher.agentpet.PET_CHANGED"
         const val ACTION_GAME_CHANGED = "online.thenightwatcher.agentpet.GAME_CHANGED"
+        const val ACTION_AGENTS_UPDATED = "online.thenightwatcher.agentpet.AGENTS_UPDATED"
         const val EXTRA_RELAY_STATUS = "status"
         private const val DONE_SESSION_IDLE_MS = 30_000L
         // Match desktop SessionStore's staleActiveAfter policy.
@@ -40,6 +41,11 @@ class PetOverlayService : Service() {
     private var overlay: FrameLayout? = null
     private var sprite: PetSpriteView? = null
     private var bubble: TextView? = null
+    private var overlayLayoutParams: WindowManager.LayoutParams? = null
+    private var bubbleBaseHeight = 62
+    private var spriteSizePx = 156
+    private var bubbleExpanded = false
+    private var concurrentAgents = 0
     private var client: RelayClient? = null
     private val pendingApprovals = linkedMapOf<String, JSONObject>()
     private val sessions = linkedMapOf<String, JSONObject>()
@@ -98,7 +104,7 @@ class PetOverlayService : Service() {
         return START_STICKY
     }
     override fun onBind(intent: Intent?): IBinder? = null
-    override fun onDestroy() { reconnectHandler.removeCallbacksAndMessages(null); doneResetRunnables.clear(); client?.close(); unregisterReceiver(settingsReceiver); overlay?.let { windowManager.removeView(it) }; overlay = null; super.onDestroy() }
+    override fun onDestroy() { reconnectHandler.removeCallbacksAndMessages(null); doneResetRunnables.clear(); client?.close(); unregisterReceiver(settingsReceiver); overlay?.let { windowManager.removeView(it) }; overlay = null; publishActiveAgentCount(0); super.onDestroy() }
     private fun notification(): Notification {
         val channel = NotificationChannel("agentpet", "AgentPet companion", NotificationManager.IMPORTANCE_LOW)
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
@@ -109,13 +115,17 @@ class PetOverlayService : Service() {
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         val saved = getSharedPreferences("overlay", MODE_PRIVATE); x = saved.getInt("x", x); y = saved.getInt("y", y)
         val spriteSize = getSharedPreferences("relay", MODE_PRIVATE).getInt("pet_size", 156).coerceIn(80, 260)
+        spriteSizePx = spriteSize
         val multi = getSharedPreferences("relay", MODE_PRIVATE).getBoolean("multi_agent_bubble", true)
         val bubbleHeight = if (multi) 112 else 62
-        var expanded = false
+        bubbleBaseHeight = bubbleHeight
+        bubbleExpanded = false
+        concurrentAgents = 0
         var lastTapAt = 0L
         val tapHandler = Handler(Looper.getMainLooper())
         var singleTap: Runnable? = null
         val params = WindowManager.LayoutParams(spriteSize + 56, spriteSize + bubbleHeight, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT).apply { gravity = Gravity.TOP or Gravity.START; this.x = x; this.y = y }
+        overlayLayoutParams = params
         overlay = FrameLayout(this).apply {
             bubble = TextView(this@PetOverlayService).apply {
                 val prefs = getSharedPreferences("relay", MODE_PRIVATE)
@@ -151,12 +161,8 @@ class PetOverlayService : Service() {
                         } else {
                             lastTapAt = now
                             singleTap = Runnable {
-                                expanded = !expanded
-                                bubble?.maxLines = if (expanded) 10 else if (multi) 4 else 2
-                                bubble?.layoutParams?.height = if (expanded) 212 else bubbleHeight - 8
-                                params.height = spriteSize + if (expanded) 220 else bubbleHeight
-                                val petOverlay = this@PetOverlayService.overlay
-                                if (petOverlay != null) runCatching { windowManager.updateViewLayout(petOverlay, params) }
+                                bubbleExpanded = !bubbleExpanded
+                                updateBubbleSize()
                             }.also { tapHandler.postDelayed(it, android.view.ViewConfiguration.getDoubleTapTimeout().toLong()) }
                         }
                     }
@@ -168,6 +174,15 @@ class PetOverlayService : Service() {
         windowManager.addView(overlay, params)
         loadSelectedPet()
         renderIdleCompanion()
+    }
+    private fun updateBubbleSize() {
+        val params = overlayLayoutParams ?: return
+        val activeHeight = if (concurrentAgents > 1) (72 + concurrentAgents.coerceAtMost(3) * 44).coerceAtLeast(bubbleBaseHeight) else bubbleBaseHeight
+        val height = if (bubbleExpanded) maxOf(220, activeHeight) else activeHeight
+        bubble?.maxLines = if (bubbleExpanded) 12 else if (concurrentAgents > 1) 2 + concurrentAgents.coerceAtMost(3) * 2 else if (bubbleBaseHeight > 62) 4 else 2
+        bubble?.layoutParams = bubble?.layoutParams?.apply { this.height = height - 8 }
+        params.height = spriteSizePx + height
+        overlay?.let { runCatching { windowManager.updateViewLayout(it, params) } }
     }
     private fun loadSelectedPet() {
         val relay = getSharedPreferences("relay", MODE_PRIVATE)
@@ -450,6 +465,13 @@ class PetOverlayService : Service() {
         else -> "idle"
     }
     private fun renderEvent(event: JSONObject) {
+        val active = sessions.values.filter { moodFor(it) == "working" || moodFor(it) == "waiting" }.sortedByDescending(::eventTimeMs)
+        publishActiveAgentCount(active.size)
+        if (pendingApprovals.isNotEmpty()) {
+            sprite?.setMood("waiting")
+            bubble?.text = "${pendingApprovals.size} approval request${if (pendingApprovals.size == 1) "" else "s"} · tap pet"
+            return
+        }
         if (aggregateMood() == "idle" && pendingApprovals.isEmpty()) {
             renderIdleCompanion()
             return
@@ -457,6 +479,24 @@ class PetOverlayService : Service() {
         val prefs = getSharedPreferences("relay", MODE_PRIVATE)
         val mood = moodFor(event)
         sprite?.setMood(aggregateMood())
+        if (active.size > 1) {
+            val showDetails = prefs.getBoolean("multi_agent_bubble", true)
+            concurrentAgents = if (showDetails) active.size else 0
+            updateBubbleSize()
+            val summary = SpannableStringBuilder("${active.size} agents active")
+            if (showDetails) {
+                active.take(3).forEach { session ->
+                    val kind = session.optString("agentKind", "Agent").replaceFirstChar(Char::uppercaseChar)
+                    val shortId = session.optString("sessionId").takeLast(4)
+                    val state = if (moodFor(session) == "waiting") "needs input" else "working"
+                    summary.append("\n").append(bubbleLine(session, moodFor(session), "$kind #$shortId · $state"))
+                }
+                if (active.size > 3) summary.append("\n+${active.size - 3} more")
+            } else summary.append(" · enable Multi-agent bubble for details")
+            bubble?.text = summary
+            return
+        }
+        if (concurrentAgents != 0) { concurrentAgents = 0; updateBubbleSize() }
         val reactive = if (prefs.getBoolean("reactive_bubbles", true)) ActivityPhrases.message(event, prefs.getString("activity_theme", "chef") ?: "chef") else null
         val message = prefs.getString("message_$mood", "")?.trim().orEmpty().ifBlank {
             if (mood == "idle") "Ready to help" else event.optString("message").trim().ifBlank { reactive.orEmpty() }
@@ -491,9 +531,18 @@ class PetOverlayService : Service() {
 
     private fun renderIdleCompanion() {
         if (pendingApprovals.isNotEmpty() || aggregateMood() != "idle") return
+        publishActiveAgentCount(0)
+        if (concurrentAgents != 0) { concurrentAgents = 0; updateBubbleSize() }
         val companion = MobilePetGame.state(this)
         sprite?.setMood(companion.idleMood)
         bubble?.text = "${companion.personality.title} · ${companion.activity}"
+    }
+
+    private fun publishActiveAgentCount(count: Int) {
+        val prefs = getSharedPreferences("relay", MODE_PRIVATE)
+        if (prefs.getInt("active_agent_count", 0) == count) return
+        prefs.edit().putInt("active_agent_count", count).apply()
+        sendBroadcast(Intent(ACTION_AGENTS_UPDATED).setPackage(packageName))
     }
 
     private fun bubbleLine(event: JSONObject, mood: String, message: String): CharSequence {

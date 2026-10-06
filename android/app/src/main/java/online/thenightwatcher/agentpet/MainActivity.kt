@@ -47,6 +47,13 @@ class MainActivity : AppCompatActivity() {
     private var gameThought: TextView? = null
     private var gameFinds: TextView? = null
     private var gameJournal: TextView? = null
+    private var gameAgentStatus: TextView? = null
+    private var gameRuleStatus: TextView? = null
+    private var gamePreview: PetSpriteView? = null
+    private var gamePreviewCaption: TextView? = null
+    private var gameReactionUntilAt = 0L
+    private var activeMainTab = 0
+    private val gameButtons = mutableMapOf<String, Button>()
     private val gameBars = mutableMapOf<String, ProgressBar>()
     private val gameBarLabels = mutableMapOf<String, TextView>()
     private var liveApprovals: List<org.json.JSONObject>? = null
@@ -66,7 +73,7 @@ class MainActivity : AppCompatActivity() {
     private val gameRefreshTask = object : Runnable {
         override fun run() {
             refreshGameScreen()
-            gameRefreshHandler.postDelayed(this, 60_000)
+            gameRefreshHandler.postDelayed(this, 10_000)
         }
     }
     private val notificationPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
@@ -75,7 +82,7 @@ class MainActivity : AppCompatActivity() {
     }
     private val statusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
-            if (intent.action == PetOverlayService.ACTION_CARE_UPDATED) refreshGameScreen()
+            if (intent.action == PetOverlayService.ACTION_CARE_UPDATED || intent.action == PetOverlayService.ACTION_AGENTS_UPDATED) refreshGameScreen()
             else if (intent.action == PetOverlayService.ACTION_APPROVALS_UPDATED) refreshInputs()
             else { showOverlayStatus(intent.getStringExtra(PetOverlayService.EXTRA_RELAY_STATUS)); refreshInputs() }
         }
@@ -118,8 +125,10 @@ class MainActivity : AppCompatActivity() {
         val pets = Spinner(this)
         root.addView(petLabel); root.addView(petSearch); root.addView(pets)
         val petPreview = PetSpriteView(this).apply { configureAnimation(true, 6) }
+        gamePreview = petPreview
         val previewName = TextView(this).apply { text = prefs.getString("pet_name", "Choose a pet") ?: "Choose a pet"; textSize = 18f; setTypeface(typeface, android.graphics.Typeface.BOLD); setTextColor(Color.WHITE); gravity = Gravity.CENTER }
         val previewCaption = TextView(this).apply { text = "A little care goes a long way."; setTextColor(Color.LTGRAY); textSize = 13f; gravity = Gravity.CENTER }
+        gamePreviewCaption = previewCaption
         val previewCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; setPadding(16, 12, 16, 16); background = panelBackground()
             addView(previewCaption)
@@ -281,6 +290,9 @@ class MainActivity : AppCompatActivity() {
             text = "A tiny friend, a little daily care."
             textSize = 14f; setTextColor(Color.LTGRAY); setPadding(4, 0, 4, 8)
         })
+        gameAgentStatus = TextView(this).apply {
+            textSize = 14f; setTextColor(Color.rgb(143, 221, 104)); setPadding(8, 6, 8, 10)
+        }.also(gamePage::addView)
         var target = petPage
         original.drop(1).forEach { view ->
             val label = (view as? TextView)?.text?.toString().orEmpty()
@@ -366,17 +378,19 @@ class MainActivity : AppCompatActivity() {
 
         gameActionSummary = TextView(this).apply { textSize = 12f; setTextColor(Color.LTGRAY); gravity = Gravity.CENTER; setPadding(4, 8, 4, 2) }
         gamePage.addView(gameActionSummary)
+        gameRuleStatus = TextView(this).apply { textSize = 13f; setTextColor(Color.rgb(255, 197, 91)); gravity = Gravity.CENTER; setPadding(8, 8, 8, 2) }
+        gamePage.addView(gameRuleStatus)
         val actionGrid = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 6, 0, 0) }
         val reactionHandler = Handler(Looper.getMainLooper())
         var resetReaction: Runnable? = null
         fun react(mood: String, message: String) {
             previewCaption.text = message
             petPreview.setMood(mood)
+            gameReactionUntilAt = System.currentTimeMillis() + 2_200
             resetReaction?.let(reactionHandler::removeCallbacks)
             resetReaction = Runnable {
-                val current = MobilePetGame.state(this@MainActivity)
-                petPreview.setMood(current.idleMood)
-                previewCaption.text = current.activity
+                gameReactionUntilAt = 0L
+                refreshGameScreen()
             }
                 .also { reactionHandler.postDelayed(it, 2_200) }
         }
@@ -385,11 +399,12 @@ class MainActivity : AppCompatActivity() {
             sendBroadcast(Intent(PetOverlayService.ACTION_GAME_CHANGED).setPackage(packageName))
             refreshGameScreen()
         }
-        fun gameButton(label: String, emoji: String, action: () -> Unit): Button = Button(this).apply {
+        fun gameButton(key: String, label: String, emoji: String, action: () -> Unit): Button = Button(this).apply {
             text = "$emoji  $label"; isAllCaps = false; textSize = 14f; setTextColor(Color.WHITE)
             background = GradientDrawable().apply { setColor(Color.rgb(42, 54, 73)); cornerRadius = 18f; setStroke(1, Color.rgb(68, 84, 108)) }
             setPadding(8, 10, 8, 10); minHeight = 52
             setOnClickListener { action() }
+            gameButtons[key] = this
         }
         fun actionRow(first: Button, second: Button) {
             actionGrid.addView(LinearLayout(this).apply {
@@ -398,22 +413,22 @@ class MainActivity : AppCompatActivity() {
                 addView(second, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = 6 })
             })
         }
-        actionRow(gameButton("Feed", "🍓") { reactTo(MobilePetGame.feed(this)) },
-            gameButton("Find the star", "⭐") {
+        actionRow(gameButton("feed", "Feed", "🍓") { reactTo(MobilePetGame.feed(this)) },
+            gameButton("play", "Find the star", "⭐") {
                 val hidingPlace = kotlin.random.Random.nextInt(3)
                 AlertDialog.Builder(this@MainActivity).setTitle("Where did your pet hide the star?")
                     .setItems(arrayOf("Left cup", "Middle cup", "Right cup")) { _, choice ->
                         reactTo(MobilePetGame.guess(this@MainActivity, choice, hidingPlace))
                     }.show()
             })
-        actionRow(gameButton("Groom", "🫧") { reactTo(MobilePetGame.groom(this)) },
-            gameButton("Nap", "💤") { reactTo(MobilePetGame.rest(this)) })
-        actionRow(gameButton("Explore", "🧭") {
+        actionRow(gameButton("groom", "Groom", "🫧") { reactTo(MobilePetGame.groom(this)) },
+            gameButton("nap", "Nap", "💤") { reactTo(MobilePetGame.rest(this)) })
+        actionRow(gameButton("explore", "Explore", "🧭") {
             AlertDialog.Builder(this@MainActivity).setTitle("Where should we explore?")
                 .setItems(arrayOf("Garden", "Attic", "Rooftop")) { _, destination ->
                     reactTo(MobilePetGame.explore(this@MainActivity, destination))
                 }.show()
-        }, gameButton("Talk", "💬") { reactTo(MobilePetGame.talk(this)) })
+        }, gameButton("talk", "Talk", "💬") { reactTo(MobilePetGame.talk(this)) })
         gamePage.addView(actionGrid)
         val journalCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; setPadding(16, 14, 16, 14); background = panelBackground()
@@ -470,8 +485,10 @@ class MainActivity : AppCompatActivity() {
         }
         val mainPages = listOf("Play" to ScrollView(this).apply { addView(gamePage) }, "Requests" to ScrollView(this).apply { addView(inputsPage) }, "Settings" to settingsPage)
         selectMain = { index ->
+            activeMainTab = index
             pageHost.removeAllViews()
             pageHost.addView(mainPages[index].second)
+            if (index == 0) refreshGameScreen()
             tabButtons.forEachIndexed { i, button ->
                 button.setTextColor(if (i == index) Color.rgb(17, 22, 32) else Color.WHITE)
                 button.setBackground(if (i == index) tabSelectedBackground() else tabBackground())
@@ -687,7 +704,7 @@ class MainActivity : AppCompatActivity() {
     }
     override fun onStart() {
         super.onStart()
-        ContextCompat.registerReceiver(this, statusReceiver, IntentFilter().apply { addAction(PetOverlayService.ACTION_RELAY_STATUS); addAction(PetOverlayService.ACTION_CARE_UPDATED); addAction(PetOverlayService.ACTION_APPROVALS_UPDATED) }, ContextCompat.RECEIVER_NOT_EXPORTED)
+        ContextCompat.registerReceiver(this, statusReceiver, IntentFilter().apply { addAction(PetOverlayService.ACTION_RELAY_STATUS); addAction(PetOverlayService.ACTION_CARE_UPDATED); addAction(PetOverlayService.ACTION_APPROVALS_UPDATED); addAction(PetOverlayService.ACTION_AGENTS_UPDATED) }, ContextCompat.RECEIVER_NOT_EXPORTED)
         if (::overlayStatus.isInitialized) showOverlayStatus()
         refreshInputs()
         inputRelayClient?.close()
@@ -697,7 +714,7 @@ class MainActivity : AppCompatActivity() {
         inputRefreshHandler.postDelayed(inputRefreshTask, 3_000)
         refreshGameScreen()
         gameRefreshHandler.removeCallbacks(gameRefreshTask)
-        gameRefreshHandler.postDelayed(gameRefreshTask, 60_000)
+        gameRefreshHandler.postDelayed(gameRefreshTask, 10_000)
     }
     override fun onResume() {
         super.onResume()
@@ -771,6 +788,12 @@ class MainActivity : AppCompatActivity() {
         careStatus?.text = "${s.stage} · Lv ${s.displayLevel} · ${s.hunger}\nXP ${s.xp} · ${s.progress}% · ${s.tokensToNextLevel} tokens to next level\nToday ${s.tokensToday} tokens · ${s.queriesToday} requests · ${s.mealsToday} sessions\nLifetime ${s.totalTokens} tokens · ${s.totalQueries} requests · ${s.totalMeals} sessions\nStreak ${s.streakDays} days\n\n${s.achievements.ifEmpty { listOf("No achievements yet") }.joinToString("\n")}" }
     private fun refreshGameScreen() {
         val game = MobilePetGame.state(this)
+        val activeAgents = getSharedPreferences("relay", MODE_PRIVATE).getInt("active_agent_count", 0)
+        gameAgentStatus?.text = when (activeAgents) {
+            0 -> "No active agents · your pet is relaxing"
+            1 -> "1 agent active"
+            else -> "$activeAgents agents active together"
+        }
         val needs = listOf(
             "hunger" to (game.hunger to game.hungerLabel),
             "happiness" to (game.happiness to game.happinessLabel),
@@ -787,6 +810,28 @@ class MainActivity : AppCompatActivity() {
         gameXpSummary?.text = "AI care · ${care.xp} XP  ·  ${care.progress}% to next level  ·  ${care.tokensToNextLevel} tokens remaining"
         gameXpProgress?.progress = care.progress
         gameActionSummary?.text = "Fed ${game.feeds} times  ·  Played ${game.playSessions} times  ·  Groomed ${game.groomings} times"
+        val sleepSeconds = (game.sleepRemainingMs + 999L) / 1_000L
+        gameRuleStatus?.text = when {
+            game.sleeping -> "💤 Napping · wakes in ${sleepSeconds / 60}m ${sleepSeconds % 60}s. Let your friend rest."
+            game.overfull -> "🍓 Too full to play or explore · ${game.activity}"
+            game.playBlockReason != null -> "⭐ ${game.playBlockReason}. Try a nap or a snack."
+            game.hunger >= 90 -> "🍓 Already full. Another snack will cause a short tummy break!"
+            else -> "Choose an activity together. Your pet will tell you when it needs a break."
+        }
+        fun enable(key: String, allowed: Boolean) {
+            gameButtons[key]?.isEnabled = allowed
+            gameButtons[key]?.alpha = if (allowed) 1f else 0.45f
+        }
+        enable("feed", !game.sleeping && !game.overfull)
+        enable("play", game.playBlockReason == null)
+        enable("groom", !game.sleeping && game.cleanliness < 95)
+        enable("nap", !game.sleeping && game.energy < 85)
+        enable("explore", game.exploreBlockReason == null)
+        enable("talk", !game.sleeping)
+        if (activeMainTab == 0 && System.currentTimeMillis() >= gameReactionUntilAt) {
+            gamePreview?.setMood(game.idleMood)
+            gamePreviewCaption?.text = game.activity
+        }
         val petName = getSharedPreferences("relay", MODE_PRIVATE).getString("pet_name", "Your friend") ?: "Your friend"
         gamePersonality?.text = "$petName · ${game.personality.title}"
         gameThought?.text = "${game.personality.introduction}\n\n“${game.activity}”"
