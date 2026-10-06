@@ -165,11 +165,43 @@ def approval_details(tool_input: dict) -> tuple[str, str]:
     return summary[:4000], execution
 
 
+def permission_tool_input(payload: dict) -> dict:
+    """Normalize Codex permission payload variants without dropping action details."""
+    for key in ("tool_input", "input", "toolInput", "permission_input"):
+        value = payload.get(key)
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            try:
+                decoded = json.loads(value)
+                if isinstance(decoded, dict):
+                    return decoded
+            except (TypeError, ValueError):
+                # Some clients provide the command itself as a plain string.
+                if value.strip():
+                    return {"command": value}
+
+    # A few hook adapters put the executable action alongside the event metadata
+    # instead of wrapping it in tool_input. Retain it rather than sending an
+    # empty preview to the companion device.
+    action_keys = ("command", "cmd", "script", "description", "cwd", "working_directory")
+    action = {key: payload[key] for key in action_keys if payload.get(key) is not None}
+    if action:
+        return action
+
+    # Last-resort context for non-shell approval tools (patches, file writes,
+    # structured tool arguments). Strip hook/session metadata, which is not an
+    # action and would only obscure the preview.
+    metadata = {"session_id", "conversation_id", "turn_id", "cwd", "hook_event_name",
+                "tool_name", "permission_id", "permission_kind"}
+    return {key: value for key, value in payload.items() if key not in metadata}
+
+
 def codex_permission_hook(payload: dict, raw_payload: bytes, base_url: str, token: str) -> None:
     """Race the local AgentPet bubble against Android; first decision wins."""
     session_id = payload.get("session_id") or payload.get("conversation_id") or ""
     tool_name = payload.get("tool_name") or "Action"
-    tool_input = payload.get("tool_input") if isinstance(payload.get("tool_input"), dict) else {}
+    tool_input = permission_tool_input(payload)
     summary, execution = approval_details(tool_input)
     # Distinct permission requests can have byte-identical payloads, so avoid
     # reusing a short-lived Durable Object approval ID for a later session.

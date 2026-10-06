@@ -72,6 +72,24 @@ class ApprovalDetailsTests(unittest.TestCase):
         self.assertIn("action details", summary)
         self.assertEqual(execution, "rm generated.tmp")
 
+    def test_normalizes_wrapped_and_serialized_permission_inputs(self):
+        for payload in (
+            {"tool_input": {"command": "cargo test"}},
+            {"input": {"command": "cargo test"}},
+            {"tool_input": '{"command":"cargo test"}'},
+            {"tool_input": "cargo test"},
+            {"command": "cargo test", "hook_event_name": "PermissionRequest"},
+        ):
+            with self.subTest(payload=payload):
+                details = hook.permission_tool_input(payload)
+                _, execution = hook.approval_details(details)
+                self.assertIn("cargo test", execution)
+
+    def test_preserves_structured_non_shell_action_arguments(self):
+        payload = {"tool_name": "apply_patch", "tool_input": {"patch": "*** Begin Patch\n..."}}
+
+        self.assertEqual(hook.permission_tool_input(payload), payload["tool_input"])
+
 
 if __name__ == "__main__":
     unittest.main()
