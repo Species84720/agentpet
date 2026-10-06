@@ -178,7 +178,7 @@ class MainActivity : AppCompatActivity() {
         root.addView(heading("Pet & animation"))
         val sizeLabel = TextView(this)
         val size = SeekBar(this).apply { max = 180; progress = prefs.getInt("pet_size", 156).coerceIn(80, 260) - 80 }
-        fun updateSizeLabel() { sizeLabel.text = "Pet size: ${size.progress + 80}px (takes effect when restarted)" }
+        fun updateSizeLabel() { sizeLabel.text = "Pet size: ${size.progress + 80}px (applied immediately)" }
         updateSizeLabel()
         size.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(bar: SeekBar?, value: Int, user: Boolean) { prefs.edit().putInt("pet_size", value + 80).apply(); updateSizeLabel() }

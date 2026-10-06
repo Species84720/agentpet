@@ -14,6 +14,7 @@ import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.widget.FrameLayout
 import android.widget.TextView
+import android.widget.ScrollView
 import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.style.ImageSpan
@@ -41,6 +42,18 @@ class PetOverlayService : Service() {
     private var overlay: FrameLayout? = null
     private var sprite: PetSpriteView? = null
     private var bubble: TextView? = null
+    private var bubbleScroll: ScrollView? = null
+    private var loadedPetSheet: String? = null
+    private val applySettings = Runnable { applyLiveSettings() }
+    private val relaySettingsListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key == "endpoint" || key == "token") {
+            reconnectHandler.removeCallbacks(reconnect)
+            reconnectHandler.postDelayed(reconnect, 1_000)
+        } else if (key != null && (key.startsWith("clip_") || key.startsWith("message_") || key.startsWith("bubble_") || key in setOf("pet_sheet", "pet_size", "animations_enabled", "animation_fps", "multi_agent_bubble", "reactive_bubbles", "activity_theme"))) {
+            reconnectHandler.removeCallbacks(applySettings)
+            reconnectHandler.postDelayed(applySettings, 100)
+        }
+    }
     private var overlayLayoutParams: WindowManager.LayoutParams? = null
     private var bubbleBaseHeight = 62
     private var spriteSizePx = 156
@@ -79,6 +92,7 @@ class PetOverlayService : Service() {
     }
     override fun onCreate() {
         super.onCreate()
+        getSharedPreferences("relay", MODE_PRIVATE).registerOnSharedPreferenceChangeListener(relaySettingsListener)
         ContextCompat.registerReceiver(this, settingsReceiver, IntentFilter().apply {
             addAction(ACTION_PET_CHANGED)
             addAction(ACTION_GAME_CHANGED)
@@ -104,7 +118,7 @@ class PetOverlayService : Service() {
         return START_STICKY
     }
     override fun onBind(intent: Intent?): IBinder? = null
-    override fun onDestroy() { reconnectHandler.removeCallbacksAndMessages(null); doneResetRunnables.clear(); client?.close(); unregisterReceiver(settingsReceiver); overlay?.let { windowManager.removeView(it) }; overlay = null; publishActiveAgentCount(0); super.onDestroy() }
+    override fun onDestroy() { getSharedPreferences("relay", MODE_PRIVATE).unregisterOnSharedPreferenceChangeListener(relaySettingsListener); reconnectHandler.removeCallbacksAndMessages(null); doneResetRunnables.clear(); client?.close(); unregisterReceiver(settingsReceiver); overlay?.let { windowManager.removeView(it) }; overlay = null; publishActiveAgentCount(0); super.onDestroy() }
     private fun notification(): Notification {
         val channel = NotificationChannel("agentpet", "AgentPet companion", NotificationManager.IMPORTANCE_LOW)
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
@@ -133,7 +147,7 @@ class PetOverlayService : Service() {
                 gravity = Gravity.CENTER; setPadding(14, 8, 14, 8); alpha = prefs.getInt("bubble_opacity", 92).coerceIn(30, 100) / 100f
                 val light = prefs.getString("bubble_theme", "system") == "light"
                 setTextColor(if (light) Color.rgb(25, 29, 38) else Color.WHITE)
-                maxLines = if (multi) 4 else 2
+                maxLines = Int.MAX_VALUE
                 background = GradientDrawable().apply { setColor(if (light) Color.rgb(243, 246, 252) else Color.rgb(43, 55, 75)); cornerRadius = 24f }
             }
             sprite = PetSpriteView(this@PetOverlayService)
@@ -141,10 +155,15 @@ class PetOverlayService : Service() {
                 getSharedPreferences("relay", MODE_PRIVATE).getInt("clip_$mood", -1)
             }.filterValues { it >= 0 })
             sprite?.configureAnimation(getSharedPreferences("relay", MODE_PRIVATE).getBoolean("animations_enabled", true), getSharedPreferences("relay", MODE_PRIVATE).getInt("animation_fps", 5))
-            addView(bubble, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, bubbleHeight - 8).apply { setMargins(4, 2, 4, 0) })
+            bubbleScroll = ScrollView(this@PetOverlayService).apply {
+                isFillViewport = true
+                isVerticalScrollBarEnabled = true
+                addView(bubble, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT))
+            }
+            addView(bubbleScroll, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, bubbleHeight - 8).apply { setMargins(4, 2, 4, 0) })
             addView(sprite, FrameLayout.LayoutParams(spriteSize, spriteSize).apply { gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL })
             var downX = 0f; var downY = 0f; var baseX = 0; var baseY = 0; var moved = false
-            setOnTouchListener { _, event -> when (event.action) {
+            sprite?.setOnTouchListener { _, event -> when (event.action) {
                 MotionEvent.ACTION_DOWN -> { downX = event.rawX; downY = event.rawY; baseX = params.x; baseY = params.y; moved = false; true }
                 MotionEvent.ACTION_MOVE -> { moved = moved || kotlin.math.abs(event.rawX - downX) > 12 || kotlin.math.abs(event.rawY - downY) > 12; params.x = baseX + (event.rawX - downX).toInt(); params.y = baseY + (event.rawY - downY).toInt(); windowManager.updateViewLayout(this, params); true }
                 MotionEvent.ACTION_UP -> {
@@ -179,20 +198,42 @@ class PetOverlayService : Service() {
         val params = overlayLayoutParams ?: return
         val activeHeight = if (concurrentAgents > 1) (72 + concurrentAgents.coerceAtMost(3) * 44).coerceAtLeast(bubbleBaseHeight) else bubbleBaseHeight
         val height = if (bubbleExpanded) maxOf(220, activeHeight) else activeHeight
-        bubble?.maxLines = if (bubbleExpanded) 12 else if (concurrentAgents > 1) 2 + concurrentAgents.coerceAtMost(3) * 2 else if (bubbleBaseHeight > 62) 4 else 2
-        bubble?.layoutParams = bubble?.layoutParams?.apply { this.height = height - 8 }
+        bubbleScroll?.layoutParams = bubbleScroll?.layoutParams?.apply { this.height = height - 8 }
         params.height = spriteSizePx + height
         overlay?.let { runCatching { windowManager.updateViewLayout(it, params) } }
     }
     private fun loadSelectedPet() {
         val relay = getSharedPreferences("relay", MODE_PRIVATE)
         val sheet = relay.getString("pet_sheet", "") ?: ""
+        loadedPetSheet = sheet
         val name = relay.getString("pet_name", "this pet") ?: "this pet"
         if (sheet.isNotBlank()) sprite?.load(sheet) { loaded -> if (!loaded) bubble?.text = "Couldn't load $name" }
         else PetCatalog.load { pets -> pets.firstOrNull()?.let { chosen ->
             relay.edit().putString("pet_sheet", chosen.spritesheetUrl).putString("pet_name", chosen.name).putString("pet_slug", chosen.slug).apply()
             sprite?.load(chosen.spritesheetUrl) { loaded -> if (!loaded) bubble?.text = "Couldn't load ${chosen.name}" }
         } }
+    }
+    private fun applyLiveSettings() {
+        if (overlay == null) return
+        val prefs = getSharedPreferences("relay", MODE_PRIVATE)
+        spriteSizePx = prefs.getInt("pet_size", 156).coerceIn(80, 260)
+        sprite?.layoutParams = sprite?.layoutParams?.apply { width = spriteSizePx; height = spriteSizePx }
+        overlayLayoutParams?.width = spriteSizePx + 56
+        bubbleBaseHeight = if (prefs.getBoolean("multi_agent_bubble", true)) 112 else 62
+        sprite?.setClipBindings(listOf("idle", "working", "waiting", "done", "celebrate", "sleepy").associateWith {
+            prefs.getInt("clip_$it", -1)
+        }.filterValues { it >= 0 })
+        sprite?.configureAnimation(prefs.getBoolean("animations_enabled", true), prefs.getInt("animation_fps", 5))
+        bubble?.apply {
+            textSize = when (prefs.getString("bubble_font", "medium")) { "small" -> 11f; "large" -> 16f; else -> 13f }
+            alpha = prefs.getInt("bubble_opacity", 92).coerceIn(30, 100) / 100f
+            val light = prefs.getString("bubble_theme", "system") == "light"
+            setTextColor(if (light) Color.rgb(25, 29, 38) else Color.WHITE)
+            background = GradientDrawable().apply { setColor(if (light) Color.rgb(243, 246, 252) else Color.rgb(43, 55, 75)); cornerRadius = 24f }
+        }
+        if (loadedPetSheet != prefs.getString("pet_sheet", "")) loadSelectedPet()
+        sessions.values.maxByOrNull(::eventTimeMs)?.let(::renderEvent) ?: renderIdleCompanion()
+        updateBubbleSize()
     }
     private fun connect() {
         val prefs = getSharedPreferences("relay", MODE_PRIVATE)

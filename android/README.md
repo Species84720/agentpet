@@ -25,6 +25,10 @@ XP.
 Use **Requests** for pending approval decisions. **Settings** contains the pet,
 animation, bubble, care, history, and relay controls. The floating pet opens
 Settings on a double-tap; a single tap expands or collapses its message bubble.
+Swipe inside the message bubble to scroll its full text. Drag the pet itself
+to move the overlay. Pet size, animation clips and speed, bubble appearance,
+and display settings apply to the running overlay automatically; relay URL
+and token edits reconnect after a short pause in typing.
 To pair the companion, enter the deployed relay URL and a `companion` device
 token in Settings → Relay, grant **Display over other apps**, and tap **Allow
 overlay and start pet**.
