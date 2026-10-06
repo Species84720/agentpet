@@ -48,6 +48,7 @@ class MainActivity : AppCompatActivity() {
     private var gameFinds: TextView? = null
     private var gameJournal: TextView? = null
     private var gameAgentStatus: TextView? = null
+    private var enableOverlayButton: Button? = null
     private var gameRuleStatus: TextView? = null
     private var gamePreview: PetSpriteView? = null
     private var gamePreviewCaption: TextView? = null
@@ -235,7 +236,7 @@ class MainActivity : AppCompatActivity() {
                 prefs.edit().putString("endpoint", endpoint.text.toString().trim().removeSuffix("/")).putString("token", token.text.toString().trim()).apply()
                 if (!Settings.canDrawOverlays(this@MainActivity)) {
                     startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
-                    Toast.makeText(this@MainActivity, "Allow \"Display over other apps\", then return and tap Start again.", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this@MainActivity, "Allow \"Display over other apps\", then return. Your pet will start automatically.", Toast.LENGTH_LONG).show()
                 } else startPet()
             }
         })
@@ -293,6 +294,10 @@ class MainActivity : AppCompatActivity() {
         gameAgentStatus = TextView(this).apply {
             textSize = 14f; setTextColor(Color.rgb(143, 221, 104)); setPadding(8, 6, 8, 10)
         }.also(gamePage::addView)
+        enableOverlayButton = Button(this).apply {
+            text = "Enable floating pet"; styleMenuButton(this)
+            setOnClickListener { startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))) }
+        }.also { gamePage.addView(it, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(52)).apply { topMargin = dp(8); bottomMargin = dp(16) }) }
         var target = petPage
         original.drop(1).forEach { view ->
             val label = (view as? TextView)?.text?.toString().orEmpty()
@@ -312,6 +317,10 @@ class MainActivity : AppCompatActivity() {
             page.setPadding(40, 24, 40, 64)
             for (i in 0 until page.childCount) when (val child = page.getChildAt(i)) {
                 is EditText -> { child.setTextColor(Color.WHITE); child.setHintTextColor(Color.GRAY) }
+                is Button -> {
+                    styleMenuButton(child)
+                    child.layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8); bottomMargin = dp(8) }
+                }
                 is TextView -> if (child !is Button && child !is CheckBox) child.setTextColor(Color.WHITE)
             }
         }
@@ -401,17 +410,17 @@ class MainActivity : AppCompatActivity() {
         }
         fun gameButton(key: String, label: String, emoji: String, action: () -> Unit): Button = Button(this).apply {
             text = "$emoji  $label"; isAllCaps = false; textSize = 14f; setTextColor(Color.WHITE)
-            background = GradientDrawable().apply { setColor(Color.rgb(42, 54, 73)); cornerRadius = 18f; setStroke(1, Color.rgb(68, 84, 108)) }
-            setPadding(8, 10, 8, 10); minHeight = 52
+            styleMenuButton(this)
+            background = buttonSurface(Color.rgb(36, 54, 67), Color.rgb(88, 122, 146))
             setOnClickListener { action() }
             gameButtons[key] = this
         }
         fun actionRow(first: Button, second: Button) {
             actionGrid.addView(LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
-                addView(first, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = 6 })
-                addView(second, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = 6 })
-            })
+                addView(first, LinearLayout.LayoutParams(0, dp(60), 1f).apply { marginEnd = dp(6) })
+                addView(second, LinearLayout.LayoutParams(0, dp(60), 1f).apply { marginStart = dp(6) })
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(12) })
         }
         actionRow(gameButton("feed", "Feed", "🍓") { reactTo(MobilePetGame.feed(this)) },
             gameButton("play", "Find the star", "⭐") {
@@ -447,22 +456,22 @@ class MainActivity : AppCompatActivity() {
 
         val shell = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.rgb(17, 22, 32)) }
         original.firstOrNull()?.let(shell::addView)
-        val tabBar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(12, 8, 12, 8) }
+        val tabBar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(dp(12), dp(12), dp(12), dp(16)) }
         val tabButtons = mutableListOf<Button>()
         val mainTabs = listOf("Play", "Requests", "Settings")
         var selectMain: (Int) -> Unit = {}
         mainTabs.forEachIndexed { index, title ->
             tabBar.addView(Button(this).apply {
-                text = title; isAllCaps = false; minWidth = 0; setPadding(8, 8, 8, 8)
+                text = title; styleMenuButton(this); minWidth = 0; textSize = 14f
                 setOnClickListener { selectMain(index) }
                 tabButtons += this
-            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(4, 0, 4, 0) })
+            }, LinearLayout.LayoutParams(0, dp(52), 1f).apply { setMargins(dp(5), 0, dp(5), 0) })
         }
         val pageHost = FrameLayout(this)
         shell.addView(tabBar)
         shell.addView(pageHost, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         val settingsPage = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val settingsTabBar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(8, 2, 8, 8) }
+        val settingsTabBar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(dp(12), dp(4), dp(12), dp(16)) }
         val settingsTabButtons = mutableListOf<Button>()
         val settingsHost = FrameLayout(this)
         val settingPages = listOf("Pet" to petPage, "Bubble" to bubblePage, "Care" to carePage, "History" to historyPage, "Relay" to connectionPage)
@@ -474,14 +483,15 @@ class MainActivity : AppCompatActivity() {
             settingsHost.addView(settingViews[index])
             settingsTabButtons.forEachIndexed { i, button ->
                 button.setTextColor(if (i == index) Color.rgb(17, 22, 32) else Color.WHITE)
+                button.isSelected = i == index
                 button.setBackground(if (i == index) tabSelectedBackground() else tabBackground())
             }
         }
         settingPages.forEachIndexed { index, pair ->
             settingsTabBar.addView(Button(this).apply {
-                text = pair.first; isAllCaps = false; minWidth = 0; setPadding(12, 7, 12, 7)
+                text = pair.first; styleMenuButton(this); minWidth = dp(76); textSize = 14f
                 setOnClickListener { selectSetting(index) }; settingsTabButtons += this
-            })
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(48)).apply { marginEnd = dp(10) })
         }
         val mainPages = listOf("Play" to ScrollView(this).apply { addView(gamePage) }, "Requests" to ScrollView(this).apply { addView(inputsPage) }, "Settings" to settingsPage)
         selectMain = { index ->
@@ -491,6 +501,7 @@ class MainActivity : AppCompatActivity() {
             if (index == 0) refreshGameScreen()
             tabButtons.forEachIndexed { i, button ->
                 button.setTextColor(if (i == index) Color.rgb(17, 22, 32) else Color.WHITE)
+                button.isSelected = i == index
                 button.setBackground(if (i == index) tabSelectedBackground() else tabBackground())
             }
         }
@@ -516,13 +527,15 @@ class MainActivity : AppCompatActivity() {
         connectionPage.addView(notificationStatus)
         connectionPage.addView(Button(this).apply {
             text = "Enable approval notifications"
+            styleMenuButton(this)
             setOnClickListener { requestNotificationPermissionOrSettings() }
-        })
+        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(52)).apply { topMargin = dp(8); bottomMargin = dp(12) })
         refreshNotificationPermissionStatus()
         connectionPage.addView(Button(this).apply {
             text = "Check for updates"
+            styleMenuButton(this)
             setOnClickListener { checkForUpdates(force = true) }
-        })
+        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(52)).apply { topMargin = dp(8); bottomMargin = dp(12) })
         setContentView(shell)
         window.decorView.post {
             val prefs = getSharedPreferences("relay", MODE_PRIVATE)
@@ -696,8 +709,16 @@ class MainActivity : AppCompatActivity() {
             }
             card.addView(LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL; gravity = Gravity.END
-                addView(Button(this@MainActivity).apply { text = "Reject"; setOnClickListener { submitApprovalDecision(id, "deny") } })
-                addView(Button(this@MainActivity).apply { text = "Approve"; setOnClickListener { submitApprovalDecision(id, "allow") } })
+                addView(Button(this@MainActivity).apply {
+                    text = "Reject"; styleMenuButton(this)
+                    background = buttonSurface(Color.rgb(68, 37, 45), Color.rgb(196, 102, 115))
+                    setOnClickListener { submitApprovalDecision(id, "deny") }
+                }, LinearLayout.LayoutParams(0, dp(52), 1f).apply { marginEnd = dp(6); topMargin = dp(12) })
+                addView(Button(this@MainActivity).apply {
+                    text = "Approve"; styleMenuButton(this)
+                    setTextColor(Color.rgb(17, 22, 32)); background = tabSelectedBackground()
+                    setOnClickListener { submitApprovalDecision(id, "allow") }
+                }, LinearLayout.LayoutParams(0, dp(52), 1f).apply { marginStart = dp(6); topMargin = dp(12) })
             })
             host.addView(card, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { bottomMargin = 12 })
         }
@@ -718,6 +739,9 @@ class MainActivity : AppCompatActivity() {
     }
     override fun onResume() {
         super.onResume()
+        val overlayAllowed = Settings.canDrawOverlays(this)
+        enableOverlayButton?.visibility = if (overlayAllowed) android.view.View.GONE else android.view.View.VISIBLE
+        if (overlayAllowed) startPet(showToast = false)
         refreshGameScreen()
         val prefs = getSharedPreferences("relay", MODE_PRIVATE)
         val build = prefs.getInt("pending_update_build", 0)
@@ -839,10 +863,10 @@ class MainActivity : AppCompatActivity() {
         gameJournal?.text = game.journal.ifEmpty { listOf("Your first little adventure is waiting.") }.joinToString("\n\n")
         refreshCareStatus()
     }
-    private fun startPet() {
+    private fun startPet(showToast: Boolean = true) {
         try {
             startForegroundService(Intent(this, PetOverlayService::class.java))
-            Toast.makeText(this, "Starting floating pet…", Toast.LENGTH_SHORT).show()
+            if (showToast) Toast.makeText(this, "Starting floating pet…", Toast.LENGTH_SHORT).show()
         } catch (error: SecurityException) {
             Toast.makeText(this, "Android blocked the overlay: allow Display over other apps and try again.", Toast.LENGTH_LONG).show()
         } catch (error: Exception) {
@@ -850,6 +874,20 @@ class MainActivity : AppCompatActivity() {
         }
     }
     private fun panelBackground() = GradientDrawable().apply { setColor(Color.rgb(34, 43, 60)); cornerRadius = 22f; setStroke(1, Color.rgb(58, 72, 96)) }
-    private fun tabSelectedBackground() = GradientDrawable().apply { setColor(Color.rgb(143, 221, 104)); cornerRadius = 16f }
-    private fun tabBackground() = GradientDrawable().apply { setColor(Color.rgb(38, 48, 66)); cornerRadius = 16f }
+    private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
+    private fun buttonSurface(fill: Int, border: Int): android.graphics.drawable.Drawable {
+        val shape = GradientDrawable().apply { setColor(fill); cornerRadius = dp(12).toFloat(); setStroke(dp(1), border) }
+        return android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(Color.argb(65, 255, 255, 255)), shape, null)
+    }
+    private fun styleMenuButton(button: Button) = button.apply {
+        isAllCaps = false; textSize = 14f; minHeight = dp(48)
+        setPadding(dp(14), dp(10), dp(14), dp(10))
+        backgroundTintList = null
+        setTextColor(Color.WHITE)
+        val destructive = listOf("clear", "reset", "stop").any { text.toString().startsWith(it, ignoreCase = true) }
+        background = if (destructive) buttonSurface(Color.rgb(62, 38, 48), Color.rgb(165, 93, 110))
+            else buttonSurface(Color.rgb(38, 48, 66), Color.rgb(83, 102, 128))
+    }
+    private fun tabSelectedBackground() = buttonSurface(Color.rgb(143, 221, 104), Color.rgb(191, 244, 159))
+    private fun tabBackground() = buttonSurface(Color.rgb(38, 48, 66), Color.rgb(83, 102, 128))
 }

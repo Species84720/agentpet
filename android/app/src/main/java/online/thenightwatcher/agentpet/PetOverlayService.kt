@@ -114,7 +114,7 @@ class PetOverlayService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        connect()
+        if (client == null) connect()
         return START_STICKY
     }
     override fun onBind(intent: Intent?): IBinder? = null
@@ -237,11 +237,20 @@ class PetOverlayService : Service() {
     }
     private fun connect() {
         val prefs = getSharedPreferences("relay", MODE_PRIVATE)
+        val endpoint = prefs.getString("endpoint", "").orEmpty()
+        val token = prefs.getString("token", "").orEmpty()
+        val uri = android.net.Uri.parse(endpoint)
+        if (token.isBlank() || uri.scheme !in setOf("http", "https") || uri.host.isNullOrBlank()) {
+            client?.close()
+            client = null
+            setConnectionStatus("Pet is floating · pair in Settings → Relay for agent updates")
+            return
+        }
         setConnectionStatus("Connecting to relay…")
         client?.close()
         client = RelayClient(
-            prefs.getString("endpoint", "") ?: "",
-            prefs.getString("token", "") ?: "",
+            endpoint,
+            token,
             { updatePet(it) },
             { setConnectionStatus("CONNECTED — live updates active"); syncCare { syncRequestHistory() } },
             { reason -> setConnectionStatus("DISCONNECTED — $reason"); reconnectHandler.removeCallbacks(reconnect); reconnectHandler.postDelayed(reconnect, 5_000) },

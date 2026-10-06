@@ -32,6 +32,9 @@ and token edits reconnect after a short pause in typing.
 To pair the companion, enter the deployed relay URL and a `companion` device
 token in Settings → Relay, grant **Display over other apps**, and tap **Allow
 overlay and start pet**.
+Once overlay permission is granted, opening the app starts the floating pet
+automatically. The Play screen offers **Enable floating pet** on first setup;
+returning from Android's permission screen starts it without another tap.
 
 The companion reads `snapshot` and `event` WebSocket frames and renders the
 selected animated pet in its floating overlay and in the game screen. When two
