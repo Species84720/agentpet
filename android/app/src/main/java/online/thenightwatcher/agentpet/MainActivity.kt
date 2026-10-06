@@ -30,6 +30,7 @@ class MainActivity : AppCompatActivity() {
         const val EXTRA_APPROVAL_SUMMARY = "approval_summary"
         const val EXTRA_APPROVAL_PROJECT = "approval_project"
         const val EXTRA_OPEN_INPUTS = "open_inputs"
+        const val EXTRA_OPEN_SETTINGS = "open_settings"
     }
     private lateinit var overlayStatus: TextView
     private var careStatus: TextView? = null
@@ -38,6 +39,12 @@ class MainActivity : AppCompatActivity() {
     private var inputConnection: TextView? = null
     private var inputRequestStatus: String? = null
     private var notificationStatus: TextView? = null
+    private var gameSummary: TextView? = null
+    private var gameXpSummary: TextView? = null
+    private var gameXpProgress: ProgressBar? = null
+    private var gameActionSummary: TextView? = null
+    private val gameBars = mutableMapOf<String, ProgressBar>()
+    private val gameBarLabels = mutableMapOf<String, TextView>()
     private var liveApprovals: List<org.json.JSONObject>? = null
     private var inputRelayClient: RelayClient? = null
     private var inputRelayEndpoint: String? = null
@@ -50,14 +57,21 @@ class MainActivity : AppCompatActivity() {
         }
     }
     private var openTab: ((Int) -> Unit)? = null
-    private val inputTabIndex = 2
+    private val inputTabIndex = 1
+    private val gameRefreshHandler = Handler(Looper.getMainLooper())
+    private val gameRefreshTask = object : Runnable {
+        override fun run() {
+            refreshGameScreen()
+            gameRefreshHandler.postDelayed(this, 60_000)
+        }
+    }
     private val notificationPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
         refreshNotificationPermissionStatus()
         if (it) refreshApprovalRequests()
     }
     private val statusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
-            if (intent.action == PetOverlayService.ACTION_CARE_UPDATED) refreshCareStatus()
+            if (intent.action == PetOverlayService.ACTION_CARE_UPDATED) refreshGameScreen()
             else if (intent.action == PetOverlayService.ACTION_APPROVALS_UPDATED) refreshInputs()
             else { showOverlayStatus(intent.getStringExtra(PetOverlayService.EXTRA_RELAY_STATUS)); refreshInputs() }
         }
@@ -101,7 +115,7 @@ class MainActivity : AppCompatActivity() {
         root.addView(petLabel); root.addView(petSearch); root.addView(pets)
         val petPreview = PetSpriteView(this).apply { configureAnimation(true, 6) }
         val previewName = TextView(this).apply { text = prefs.getString("pet_name", "Choose a pet") ?: "Choose a pet"; textSize = 18f; setTypeface(typeface, android.graphics.Typeface.BOLD); setTextColor(Color.WHITE); gravity = Gravity.CENTER }
-        val previewCaption = TextView(this).apply { text = "Choose a mood and clip below to preview it"; setTextColor(Color.LTGRAY); textSize = 13f; gravity = Gravity.CENTER }
+        val previewCaption = TextView(this).apply { text = "A little care goes a long way."; setTextColor(Color.LTGRAY); textSize = 13f; gravity = Gravity.CENTER }
         val previewCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; setPadding(16, 12, 16, 16); background = panelBackground()
             addView(previewCaption)
@@ -177,8 +191,10 @@ class MainActivity : AppCompatActivity() {
         moodPicker.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener { override fun onNothingSelected(p: AdapterView<*>?) = Unit; override fun onItemSelected(p: AdapterView<*>?, v: android.view.View?, pos: Int, id: Long) = syncClip() }
         clipPicker.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener { override fun onNothingSelected(p: AdapterView<*>?) = Unit; override fun onItemSelected(p: AdapterView<*>?, v: android.view.View?, pos: Int, id: Long) { val mood = moods.getOrElse(moodPicker.selectedItemPosition) { "idle" }; prefs.edit().putInt("clip_$mood", pos).apply(); previewSelectedClip() } }
         root.addView(TextView(this).apply { text = "Animation clip for mood (clamped if this pet has fewer clips)" }); root.addView(moodPicker); root.addView(clipPicker)
-        root.addView(CheckBox(this).apply { text = "Animate pet"; isChecked = prefs.getBoolean("animations_enabled", true); setTextColor(Color.WHITE); setOnCheckedChangeListener { _, checked -> prefs.edit().putBoolean("animations_enabled", checked).apply() } })
-        val fpsLabel = TextView(this); val fps = SeekBar(this).apply { max = 11; progress = prefs.getInt("animation_fps", 5).coerceIn(1, 12) - 1 }; fun paintFps() { fpsLabel.text = "Animation speed: ${fps.progress + 1} fps" }; paintFps(); fps.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener { override fun onProgressChanged(s: SeekBar?, p: Int, u: Boolean) { prefs.edit().putInt("animation_fps", p + 1).apply(); paintFps() }; override fun onStartTrackingTouch(s: SeekBar?) = Unit; override fun onStopTrackingTouch(s: SeekBar?) = Unit }); root.addView(fpsLabel); root.addView(fps)
+        root.addView(CheckBox(this).apply { text = "Animate pet"; isChecked = prefs.getBoolean("animations_enabled", true); setTextColor(Color.WHITE); setOnCheckedChangeListener { _, checked -> prefs.edit().putBoolean("animations_enabled", checked).apply(); petPreview.configureAnimation(checked, prefs.getInt("animation_fps", 5)) } })
+        val fpsLabel = TextView(this); val fps = SeekBar(this).apply { max = 11; progress = prefs.getInt("animation_fps", 5).coerceIn(1, 12) - 1 }; fun paintFps() { fpsLabel.text = "Animation speed: ${fps.progress + 1} fps" }; paintFps(); fps.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener { override fun onProgressChanged(s: SeekBar?, p: Int, u: Boolean) { prefs.edit().putInt("animation_fps", p + 1).apply(); paintFps(); petPreview.configureAnimation(prefs.getBoolean("animations_enabled", true), p + 1) }; override fun onStartTrackingTouch(s: SeekBar?) = Unit; override fun onStopTrackingTouch(s: SeekBar?) = Unit }); root.addView(fpsLabel); root.addView(fps)
+        petPreview.setClipBindings(moods.associateWith { prefs.getInt("clip_$it", moods.indexOf(it)) })
+        petPreview.configureAnimation(prefs.getBoolean("animations_enabled", true), prefs.getInt("animation_fps", 5))
 
         root.addView(heading("Bubble & agents"))
         root.addView(CheckBox(this).apply { text = "Multi-agent bubble"; isChecked = prefs.getBoolean("multi_agent_bubble", true); setTextColor(Color.WHITE); setOnCheckedChangeListener { _, checked -> prefs.edit().putBoolean("multi_agent_bubble", checked).apply() } })
@@ -236,6 +252,7 @@ class MainActivity : AppCompatActivity() {
         // instead of one endless settings form.
         val original = (0 until root.childCount).map(root::getChildAt)
         root.removeAllViews()
+        val gamePage = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(24, 12, 24, 28) }
         val petPage = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val bubblePage = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val carePage = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -251,12 +268,22 @@ class MainActivity : AppCompatActivity() {
         })
         inputList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         inputsPage.addView(inputList)
+        gamePage.addView(TextView(this).apply {
+            text = "Your companion"
+            textSize = 24f; setTypeface(typeface, android.graphics.Typeface.BOLD); setTextColor(Color.WHITE)
+            setPadding(4, 4, 4, 2)
+        })
+        gamePage.addView(TextView(this).apply {
+            text = "A tiny friend, a little daily care."
+            textSize = 14f; setTextColor(Color.LTGRAY); setPadding(4, 0, 4, 8)
+        })
         var target = petPage
-        original.drop(3).forEach { view ->
+        original.drop(1).forEach { view ->
             val label = (view as? TextView)?.text?.toString().orEmpty()
             when {
-                view === endpoint || view === token -> connectionPage.addView(view)
+                view === endpoint || view === token || view === overlayStatus -> connectionPage.addView(view)
                 view === petLabel || view === petSearch || view === pets -> petPage.addView(view)
+                view === previewCard -> gamePage.addView(view)
                 label == "Pet & animation" -> { target = petPage; target.addView(view) }
                 label == "Bubble & agents" -> { target = bubblePage; target.addView(view) }
                 label == "Android pet care" -> { target = carePage; target.addView(view) }
@@ -273,23 +300,135 @@ class MainActivity : AppCompatActivity() {
             }
         }
         listOf(petPage, bubblePage, carePage, historyPage, inputsPage, connectionPage).forEach(::prepare)
-        val shell = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.rgb(17, 22, 32)) }
-        original.take(3).forEach(shell::addView)
-        val tabBar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(8, 4, 8, 4) }
-        val tabScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(tabBar) }
-        val pageHost = FrameLayout(this)
-        shell.addView(tabScroll)
-        shell.addView(pageHost, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
-        val pages = listOf("Pet" to petPage, "Bubble" to bubblePage, "Inputs" to inputsPage, "Care" to carePage, "History" to historyPage, "Connection" to connectionPage)
-        val pageViews = pages.map { (_, page) -> ScrollView(this).apply { addView(page) } }
-        val tabButtons = mutableListOf<Button>()
-        fun select(index: Int) {
-            pageHost.removeAllViews()
-            pageHost.addView(pageViews[index])
-            tabButtons.forEachIndexed { i, button -> button.setTextColor(if (i == index) Color.rgb(17, 22, 32) else Color.WHITE); button.setBackground(if (i == index) tabSelectedBackground() else tabBackground()) }
+
+        val needsCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; setPadding(16, 14, 16, 16); background = panelBackground()
         }
-        openTab = ::select
-        pages.forEachIndexed { index, pair -> tabBar.addView(Button(this).apply { text = pair.first; isAllCaps = false; minWidth = 0; setPadding(14, 8, 14, 8); setOnClickListener { select(index) }; tabButtons += this }) }
+        needsCard.addView(TextView(this).apply {
+            text = "Daily needs"; textSize = 17f; setTypeface(typeface, android.graphics.Typeface.BOLD)
+            setTextColor(Color.WHITE); setPadding(0, 0, 0, 8)
+        })
+        fun needRow(key: String, title: String, tint: Int) {
+            val row = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 6, 0, 6) }
+            val line = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            val name = TextView(this).apply { text = title; textSize = 13f; setTextColor(Color.WHITE) }
+            val value = TextView(this).apply { textSize = 12f; setTextColor(Color.LTGRAY); gravity = Gravity.END }
+            line.addView(name, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            line.addView(value)
+            val bar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+                max = 100; progress = 50; progressTintList = android.content.res.ColorStateList.valueOf(tint)
+                progressBackgroundTintList = android.content.res.ColorStateList.valueOf(Color.rgb(54, 64, 79))
+            }
+            row.addView(line)
+            row.addView(bar, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 9).apply { topMargin = 6 })
+            needsCard.addView(row)
+            gameBars[key] = bar
+            gameBarLabels[key] = value
+        }
+        needRow("hunger", "🍓  Hunger", Color.rgb(255, 180, 77))
+        needRow("happiness", "✨  Happiness", Color.rgb(244, 119, 190))
+        needRow("cleanliness", "🫧  Cleanliness", Color.rgb(102, 203, 226))
+        needRow("energy", "⚡  Energy", Color.rgb(143, 221, 104))
+        gamePage.addView(needsCard, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = 8 })
+
+        val progressCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; setPadding(16, 12, 16, 14); background = panelBackground()
+        }
+        gameSummary = TextView(this).apply { textSize = 16f; setTypeface(typeface, android.graphics.Typeface.BOLD); setTextColor(Color.WHITE) }
+        gameXpSummary = TextView(this).apply { textSize = 12f; setTextColor(Color.LTGRAY); setPadding(0, 4, 0, 6) }
+        gameXpProgress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100; progressTintList = android.content.res.ColorStateList.valueOf(Color.rgb(143, 221, 104))
+            progressBackgroundTintList = android.content.res.ColorStateList.valueOf(Color.rgb(54, 64, 79))
+        }
+        progressCard.addView(gameSummary)
+        progressCard.addView(gameXpSummary)
+        progressCard.addView(gameXpProgress, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 8))
+        gamePage.addView(progressCard, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = 10 })
+
+        gameActionSummary = TextView(this).apply { textSize = 12f; setTextColor(Color.LTGRAY); gravity = Gravity.CENTER; setPadding(4, 8, 4, 2) }
+        gamePage.addView(gameActionSummary)
+        val actionGrid = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 6, 0, 0) }
+        val reactionHandler = Handler(Looper.getMainLooper())
+        var resetReaction: Runnable? = null
+        fun react(mood: String, message: String) {
+            previewCaption.text = message
+            petPreview.setMood(mood)
+            resetReaction?.let(reactionHandler::removeCallbacks)
+            resetReaction = Runnable { petPreview.setMood("idle") }
+                .also { reactionHandler.postDelayed(it, 2_200) }
+        }
+        fun gameButton(label: String, emoji: String, action: () -> Unit): Button = Button(this).apply {
+            text = "$emoji  $label"; isAllCaps = false; textSize = 14f; setTextColor(Color.WHITE)
+            background = GradientDrawable().apply { setColor(Color.rgb(42, 54, 73)); cornerRadius = 18f; setStroke(1, Color.rgb(68, 84, 108)) }
+            setPadding(8, 10, 8, 10); minHeight = 52
+            setOnClickListener(action)
+        }
+        fun actionRow(first: Button, second: Button) {
+            actionGrid.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                addView(first, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = 6 })
+                addView(second, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = 6 })
+            })
+        }
+        actionRow(gameButton("Feed", "🍓") { MobilePetGame.feed(this); react("celebrate", "Mmm, tasty! Your friend feels loved."); refreshGameScreen() },
+            gameButton("Play", "🧶") { MobilePetGame.play(this); react("celebrate", "That was fun! Time for a little rest later."); refreshGameScreen() })
+        actionRow(gameButton("Groom", "🫧") { MobilePetGame.groom(this); react("celebrate", "All clean and looking lovely!"); refreshGameScreen() },
+            gameButton("Nap", "💤") { MobilePetGame.rest(this); react("sleepy", "Sweet dreams, little friend."); refreshGameScreen() })
+        gamePage.addView(actionGrid)
+        gamePage.addView(TextView(this).apply {
+            text = "Care actions are just for fun. Real AI usage still earns XP and levels up your Android pet."
+            textSize = 12f; setTextColor(Color.LTGRAY); gravity = Gravity.CENTER; setPadding(8, 12, 8, 2)
+        })
+
+        val shell = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.rgb(17, 22, 32)) }
+        original.firstOrNull()?.let(shell::addView)
+        val tabBar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(12, 8, 12, 8) }
+        val tabButtons = mutableListOf<Button>()
+        val mainTabs = listOf("Play", "Requests", "Settings")
+        var selectMain: (Int) -> Unit = {}
+        mainTabs.forEachIndexed { index, title ->
+            tabBar.addView(Button(this).apply {
+                text = title; isAllCaps = false; minWidth = 0; setPadding(8, 8, 8, 8)
+                setOnClickListener { selectMain(index) }
+                tabButtons += this
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(4, 0, 4, 0) })
+        }
+        val pageHost = FrameLayout(this)
+        shell.addView(tabBar)
+        shell.addView(pageHost, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        val settingsPage = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val settingsTabBar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(8, 2, 8, 8) }
+        val settingsTabButtons = mutableListOf<Button>()
+        val settingsHost = FrameLayout(this)
+        val settingPages = listOf("Pet" to petPage, "Bubble" to bubblePage, "Care" to carePage, "History" to historyPage, "Relay" to connectionPage)
+        val settingViews = settingPages.map { (_, page) -> ScrollView(this).apply { addView(page) } }
+        settingsPage.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(settingsTabBar) })
+        settingsPage.addView(settingsHost, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        fun selectSetting(index: Int) {
+            settingsHost.removeAllViews()
+            settingsHost.addView(settingViews[index])
+            settingsTabButtons.forEachIndexed { i, button ->
+                button.setTextColor(if (i == index) Color.rgb(17, 22, 32) else Color.WHITE)
+                button.setBackground(if (i == index) tabSelectedBackground() else tabBackground())
+            }
+        }
+        settingPages.forEachIndexed { index, pair ->
+            settingsTabBar.addView(Button(this).apply {
+                text = pair.first; isAllCaps = false; minWidth = 0; setPadding(12, 7, 12, 7)
+                setOnClickListener { selectSetting(index) }; settingsTabButtons += this
+            })
+        }
+        val mainPages = listOf("Play" to ScrollView(this).apply { addView(gamePage) }, "Requests" to ScrollView(this).apply { addView(inputsPage) }, "Settings" to settingsPage)
+        selectMain = { index ->
+            pageHost.removeAllViews()
+            pageHost.addView(mainPages[index].second)
+            tabButtons.forEachIndexed { i, button ->
+                button.setTextColor(if (i == index) Color.rgb(17, 22, 32) else Color.WHITE)
+                button.setBackground(if (i == index) tabSelectedBackground() else tabBackground())
+            }
+        }
+        openTab = { index -> selectMain(if (index == inputTabIndex) 1 else index.coerceIn(0, 2)) }
+        selectSetting(0)
         connectionPage.addView(TextView(this).apply {
             text = "AgentPet ${BuildConfig.VERSION_NAME} · build ${BuildConfig.VERSION_CODE}"
             textSize = 14f
@@ -326,16 +465,22 @@ class MainActivity : AppCompatActivity() {
             }
         }
         refreshInputs()
-        select(if (intent.getBooleanExtra(EXTRA_OPEN_INPUTS, false) || intent.hasExtra(EXTRA_APPROVAL_ID)) inputTabIndex else 0)
+        selectMain(when {
+            intent.getBooleanExtra(EXTRA_OPEN_INPUTS, false) || intent.hasExtra(EXTRA_APPROVAL_ID) -> inputTabIndex
+            intent.getBooleanExtra(EXTRA_OPEN_SETTINGS, false) -> 2
+            else -> 0
+        })
+        refreshGameScreen()
         showOverlayStatus()
         showApprovalIfRequested(intent)
-        checkForUpdates(force = false, showPrompt = intent.getStringExtra(EXTRA_APPROVAL_ID).isNullOrBlank() && !intent.getBooleanExtra(EXTRA_OPEN_INPUTS, false))
+        checkForUpdates(force = false, showPrompt = intent.getStringExtra(EXTRA_APPROVAL_ID).isNullOrBlank() && !intent.getBooleanExtra(EXTRA_OPEN_INPUTS, false) && !intent.getBooleanExtra(EXTRA_OPEN_SETTINGS, false))
     }
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         showApprovalIfRequested(intent)
         if (intent.getBooleanExtra(EXTRA_OPEN_INPUTS, false)) openTab?.invoke(inputTabIndex)
+        if (intent.getBooleanExtra(EXTRA_OPEN_SETTINGS, false)) openTab?.invoke(2)
         if (intent.getBooleanExtra(EXTRA_OPEN_INPUTS, false) || intent.hasExtra(EXTRA_APPROVAL_ID)) refreshApprovalRequests()
     }
     private fun showApprovalIfRequested(intent: Intent) {
@@ -500,9 +645,13 @@ class MainActivity : AppCompatActivity() {
         inputRefreshHandler.removeCallbacks(inputRefreshTask)
         refreshApprovalRequests()
         inputRefreshHandler.postDelayed(inputRefreshTask, 3_000)
+        refreshGameScreen()
+        gameRefreshHandler.removeCallbacks(gameRefreshTask)
+        gameRefreshHandler.postDelayed(gameRefreshTask, 60_000)
     }
     override fun onResume() {
         super.onResume()
+        refreshGameScreen()
         val prefs = getSharedPreferences("relay", MODE_PRIVATE)
         val build = prefs.getInt("pending_update_build", 0)
         val url = prefs.getString("pending_update_url", null)
@@ -516,6 +665,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
     override fun onStop() {
+        gameRefreshHandler.removeCallbacks(gameRefreshTask)
         inputRefreshHandler.removeCallbacks(inputRefreshTask)
         inputRelayClient?.close()
         inputRelayClient = null
@@ -569,6 +719,25 @@ class MainActivity : AppCompatActivity() {
     private fun refreshCareStatus() {
         val s = MobilePetCare.state(this)
         careStatus?.text = "${s.stage} · Lv ${s.displayLevel} · ${s.hunger}\nXP ${s.xp} · ${s.progress}% · ${s.tokensToNextLevel} tokens to next level\nToday ${s.tokensToday} tokens · ${s.queriesToday} requests · ${s.mealsToday} sessions\nLifetime ${s.totalTokens} tokens · ${s.totalQueries} requests · ${s.totalMeals} sessions\nStreak ${s.streakDays} days\n\n${s.achievements.ifEmpty { listOf("No achievements yet") }.joinToString("\n")}" }
+    private fun refreshGameScreen() {
+        val game = MobilePetGame.state(this)
+        val needs = listOf(
+            "hunger" to (game.hunger to game.hungerLabel),
+            "happiness" to (game.happiness to game.happinessLabel),
+            "cleanliness" to (game.cleanliness to game.cleanlinessLabel),
+            "energy" to (game.energy to game.energyLabel),
+        )
+        needs.forEach { (key, pair) ->
+            gameBars[key]?.progress = pair.first
+            gameBarLabels[key]?.text = "${pair.second} · ${pair.first}%"
+        }
+        val care = MobilePetCare.state(this)
+        gameSummary?.text = "${care.stage}  ·  Level ${care.displayLevel}"
+        gameXpSummary?.text = "AI care · ${care.xp} XP  ·  ${care.progress}% to next level  ·  ${care.tokensToNextLevel} tokens remaining"
+        gameXpProgress?.progress = care.progress
+        gameActionSummary?.text = "Fed ${game.feeds} times  ·  Played ${game.playSessions} times  ·  Groomed ${game.groomings} times"
+        refreshCareStatus()
+    }
     private fun startPet() {
         try {
             startForegroundService(Intent(this, PetOverlayService::class.java))

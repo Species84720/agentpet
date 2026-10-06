@@ -136,6 +136,7 @@ class PetOverlayService : Service() {
                             lastTapAt = 0L
                             startActivity(Intent(this@PetOverlayService, MainActivity::class.java).apply {
                                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                                putExtra(MainActivity.EXTRA_OPEN_SETTINGS, true)
                             })
                         } else {
                             lastTapAt = now
