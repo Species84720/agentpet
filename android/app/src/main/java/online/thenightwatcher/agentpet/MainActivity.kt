@@ -43,6 +43,10 @@ class MainActivity : AppCompatActivity() {
     private var gameXpSummary: TextView? = null
     private var gameXpProgress: ProgressBar? = null
     private var gameActionSummary: TextView? = null
+    private var gamePersonality: TextView? = null
+    private var gameThought: TextView? = null
+    private var gameFinds: TextView? = null
+    private var gameJournal: TextView? = null
     private val gameBars = mutableMapOf<String, ProgressBar>()
     private val gameBarLabels = mutableMapOf<String, TextView>()
     private var liveApprovals: List<org.json.JSONObject>? = null
@@ -301,6 +305,20 @@ class MainActivity : AppCompatActivity() {
         }
         listOf(petPage, bubblePage, carePage, historyPage, inputsPage, connectionPage).forEach(::prepare)
 
+        val characterCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; setPadding(16, 14, 16, 14); background = panelBackground()
+        }
+        gamePersonality = TextView(this).apply {
+            textSize = 18f; setTypeface(typeface, android.graphics.Typeface.BOLD); setTextColor(Color.WHITE)
+        }.also(characterCard::addView)
+        gameThought = TextView(this).apply {
+            textSize = 15f; setTextColor(Color.rgb(225, 235, 247)); setPadding(0, 8, 0, 8)
+        }.also(characterCard::addView)
+        gameFinds = TextView(this).apply {
+            textSize = 12f; setTextColor(Color.rgb(255, 197, 91))
+        }.also(characterCard::addView)
+        gamePage.addView(characterCard, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = 8 })
+
         val needsCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; setPadding(16, 14, 16, 16); background = panelBackground()
         }
@@ -329,6 +347,7 @@ class MainActivity : AppCompatActivity() {
         needRow("happiness", "✨  Happiness", Color.rgb(244, 119, 190))
         needRow("cleanliness", "🫧  Cleanliness", Color.rgb(102, 203, 226))
         needRow("energy", "⚡  Energy", Color.rgb(143, 221, 104))
+        needRow("bond", "💗  Friendship", Color.rgb(255, 126, 146))
         gamePage.addView(needsCard, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = 8 })
 
         val progressCard = LinearLayout(this).apply {
@@ -354,8 +373,17 @@ class MainActivity : AppCompatActivity() {
             previewCaption.text = message
             petPreview.setMood(mood)
             resetReaction?.let(reactionHandler::removeCallbacks)
-            resetReaction = Runnable { petPreview.setMood("idle") }
+            resetReaction = Runnable {
+                val current = MobilePetGame.state(this@MainActivity)
+                petPreview.setMood(current.idleMood)
+                previewCaption.text = current.activity
+            }
                 .also { reactionHandler.postDelayed(it, 2_200) }
+        }
+        fun reactTo(reaction: MobilePetGame.Reaction) {
+            react(reaction.mood, reaction.message)
+            sendBroadcast(Intent(PetOverlayService.ACTION_GAME_CHANGED).setPackage(packageName))
+            refreshGameScreen()
         }
         fun gameButton(label: String, emoji: String, action: () -> Unit): Button = Button(this).apply {
             text = "$emoji  $label"; isAllCaps = false; textSize = 14f; setTextColor(Color.WHITE)
@@ -370,13 +398,35 @@ class MainActivity : AppCompatActivity() {
                 addView(second, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = 6 })
             })
         }
-        actionRow(gameButton("Feed", "🍓") { MobilePetGame.feed(this); react("celebrate", "Mmm, tasty! Your friend feels loved."); refreshGameScreen() },
-            gameButton("Play", "🧶") { MobilePetGame.play(this); react("celebrate", "That was fun! Time for a little rest later."); refreshGameScreen() })
-        actionRow(gameButton("Groom", "🫧") { MobilePetGame.groom(this); react("celebrate", "All clean and looking lovely!"); refreshGameScreen() },
-            gameButton("Nap", "💤") { MobilePetGame.rest(this); react("sleepy", "Sweet dreams, little friend."); refreshGameScreen() })
+        actionRow(gameButton("Feed", "🍓") { reactTo(MobilePetGame.feed(this)) },
+            gameButton("Find the star", "⭐") {
+                val hidingPlace = kotlin.random.Random.nextInt(3)
+                AlertDialog.Builder(this@MainActivity).setTitle("Where did your pet hide the star?")
+                    .setItems(arrayOf("Left cup", "Middle cup", "Right cup")) { _, choice ->
+                        reactTo(MobilePetGame.guess(this@MainActivity, choice, hidingPlace))
+                    }.show()
+            })
+        actionRow(gameButton("Groom", "🫧") { reactTo(MobilePetGame.groom(this)) },
+            gameButton("Nap", "💤") { reactTo(MobilePetGame.rest(this)) })
+        actionRow(gameButton("Explore", "🧭") {
+            AlertDialog.Builder(this@MainActivity).setTitle("Where should we explore?")
+                .setItems(arrayOf("Garden", "Attic", "Rooftop")) { _, destination ->
+                    reactTo(MobilePetGame.explore(this@MainActivity, destination))
+                }.show()
+        }, gameButton("Talk", "💬") { reactTo(MobilePetGame.talk(this)) })
         gamePage.addView(actionGrid)
+        val journalCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; setPadding(16, 14, 16, 14); background = panelBackground()
+        }
+        journalCard.addView(TextView(this).apply {
+            text = "Little moments"; textSize = 17f; setTypeface(typeface, android.graphics.Typeface.BOLD); setTextColor(Color.WHITE)
+        })
+        gameJournal = TextView(this).apply {
+            textSize = 13f; setTextColor(Color.LTGRAY); setPadding(0, 8, 0, 0)
+        }.also(journalCard::addView)
+        gamePage.addView(journalCard, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = 12 })
         gamePage.addView(TextView(this).apply {
-            text = "Care actions are just for fun. Real AI usage still earns XP and levels up your Android pet."
+            text = "Your companion has its own little life, even while you're away. AI usage still earns XP and levels."
             textSize = 12f; setTextColor(Color.LTGRAY); gravity = Gravity.CENTER; setPadding(8, 12, 8, 2)
         })
 
@@ -726,6 +776,7 @@ class MainActivity : AppCompatActivity() {
             "happiness" to (game.happiness to game.happinessLabel),
             "cleanliness" to (game.cleanliness to game.cleanlinessLabel),
             "energy" to (game.energy to game.energyLabel),
+            "bond" to (game.bond to "Friends"),
         )
         needs.forEach { (key, pair) ->
             gameBars[key]?.progress = pair.first
@@ -736,6 +787,11 @@ class MainActivity : AppCompatActivity() {
         gameXpSummary?.text = "AI care · ${care.xp} XP  ·  ${care.progress}% to next level  ·  ${care.tokensToNextLevel} tokens remaining"
         gameXpProgress?.progress = care.progress
         gameActionSummary?.text = "Fed ${game.feeds} times  ·  Played ${game.playSessions} times  ·  Groomed ${game.groomings} times"
+        val petName = getSharedPreferences("relay", MODE_PRIVATE).getString("pet_name", "Your friend") ?: "Your friend"
+        gamePersonality?.text = "$petName · ${game.personality.title}"
+        gameThought?.text = "${game.personality.introduction}\n\n“${game.activity}”"
+        gameFinds?.text = if (game.finds.isEmpty()) "Keepsakes: none yet · try Explore" else "Keepsakes: ${game.finds.sorted().joinToString(" · ")}"
+        gameJournal?.text = game.journal.ifEmpty { listOf("Your first little adventure is waiting.") }.joinToString("\n\n")
         refreshCareStatus()
     }
     private fun startPet() {

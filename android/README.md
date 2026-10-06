@@ -7,9 +7,15 @@ overlay grant, and keeps a draggable pop-up above other apps while connected.
 ## Run
 
 Open `android/` in Android Studio (JDK 17; Android SDK 35). The app opens on its
-local Tamagotchi game: feed, play with, groom, and let the pet nap. These playful
-care actions are stored on the phone and do not grant AI-use XP or change the
-Cloudflare care totals. Actual agent token use continues to award level XP.
+local companion game. Feed, groom, or let your pet nap; play a three-cup guessing
+game, explore three places for keepsakes, and talk to it. Each pet has a
+persistent Scout, Dreamer, or Rascal personality, a friendship meter, and a
+short diary. Its needs change with time; after 90 minutes alone it can nap,
+find a snack, tidy up, or follow its personality on a little adventure. The
+floating pet shows these idle thoughts only when no AI task or approval needs
+attention. Game actions are stored on the phone and do not grant AI-use XP or
+change Cloudflare care totals. Actual agent token use continues to award level
+XP.
 
 Use **Requests** for pending approval decisions. **Settings** contains the pet,
 animation, bubble, care, history, and relay controls. The floating pet opens

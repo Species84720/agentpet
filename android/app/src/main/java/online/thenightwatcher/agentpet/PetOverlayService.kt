@@ -28,6 +28,7 @@ class PetOverlayService : Service() {
         const val ACTION_CARE_UPDATED = "online.thenightwatcher.agentpet.CARE_UPDATED"
         const val ACTION_APPROVALS_UPDATED = "online.thenightwatcher.agentpet.APPROVALS_UPDATED"
         const val ACTION_PET_CHANGED = "online.thenightwatcher.agentpet.PET_CHANGED"
+        const val ACTION_GAME_CHANGED = "online.thenightwatcher.agentpet.GAME_CHANGED"
         const val EXTRA_RELAY_STATUS = "status"
         private const val DONE_SESSION_IDLE_MS = 30_000L
         // Match desktop SessionStore's staleActiveAfter policy.
@@ -55,18 +56,27 @@ class PetOverlayService : Service() {
         override fun run() {
             if (pruneSessions()) {
                 sessions.values.maxByOrNull(::eventTimeMs)?.let(::renderEvent)
-                    ?: run { sprite?.setMood("idle"); bubble?.text = "Ready to help" }
+                    ?: renderIdleCompanion()
             }
+            if (aggregateMood() == "idle") renderIdleCompanion()
             reconnectHandler.postDelayed(this, SESSION_SWEEP_INTERVAL_MS)
         }
     }
     private var careSyncing = false
     private val settingsReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) { if (intent?.action == ACTION_PET_CHANGED) loadSelectedPet() }
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                ACTION_PET_CHANGED -> loadSelectedPet()
+                ACTION_GAME_CHANGED -> renderIdleCompanion()
+            }
+        }
     }
     override fun onCreate() {
         super.onCreate()
-        ContextCompat.registerReceiver(this, settingsReceiver, IntentFilter(ACTION_PET_CHANGED), ContextCompat.RECEIVER_NOT_EXPORTED)
+        ContextCompat.registerReceiver(this, settingsReceiver, IntentFilter().apply {
+            addAction(ACTION_PET_CHANGED)
+            addAction(ACTION_GAME_CHANGED)
+        }, ContextCompat.RECEIVER_NOT_EXPORTED)
         ApprovalInbox.all(this).forEach { approval -> pendingApprovals[approval.optString("requestId")] = approval }
         reconnectHandler.postDelayed(sessionExpiry, SESSION_SWEEP_INTERVAL_MS)
         reconnectHandler.postDelayed(approvalPoll, 1_000)
@@ -157,6 +167,7 @@ class PetOverlayService : Service() {
         }
         windowManager.addView(overlay, params)
         loadSelectedPet()
+        renderIdleCompanion()
     }
     private fun loadSelectedPet() {
         val relay = getSharedPreferences("relay", MODE_PRIVATE)
@@ -222,7 +233,7 @@ class PetOverlayService : Service() {
                     sprite?.setMood("waiting")
                 } else if (bubble?.text?.contains("approval", ignoreCase = true) == true) {
                     sessions.values.maxByOrNull(::eventTimeMs)?.let(::renderEvent)
-                        ?: run { bubble?.text = "Ready to help"; sprite?.setMood("idle") }
+                        ?: renderIdleCompanion()
                 }
                 sendBroadcast(Intent(ACTION_APPROVALS_UPDATED).setPackage(packageName))
             }
@@ -258,7 +269,10 @@ class PetOverlayService : Service() {
                     } else {
                         bubble?.text = if (expired) "Timed out · approve in Codex" else "Approval answered · resuming"
                         sprite?.setMood(if (expired) "waiting" else "working")
-                        reconnectHandler.postDelayed({ if (pendingApprovals.isEmpty()) sessions.values.maxByOrNull(::eventTimeMs)?.let(::renderEvent) }, 2_000)
+                        reconnectHandler.postDelayed({
+                            if (pendingApprovals.isEmpty()) sessions.values.maxByOrNull(::eventTimeMs)?.let(::renderEvent)
+                                ?: renderIdleCompanion()
+                        }, 2_000)
                     }
                 }
                 return@post
@@ -279,7 +293,7 @@ class PetOverlayService : Service() {
                 }
             }
             pruneSessions()
-            sessions.values.maxByOrNull(::eventTimeMs)?.let(::renderEvent)
+            sessions.values.maxByOrNull(::eventTimeMs)?.let(::renderEvent) ?: renderIdleCompanion()
             return@post
         }
         val event = frame.optJSONObject("event") ?: return@post
@@ -422,7 +436,7 @@ class PetOverlayService : Service() {
             if (moodFor(latest) != "done" || eventTimeMs(latest) != completedAt) return@Runnable
             latest.put("_agentpetMood", "idle")
             pruneSessions()
-            sessions.values.maxByOrNull(::eventTimeMs)?.let(::renderEvent)
+            sessions.values.maxByOrNull(::eventTimeMs)?.let(::renderEvent) ?: renderIdleCompanion()
         }
         doneResetRunnables[sessionId] = settle
         reconnectHandler.postDelayed(settle, (DONE_SESSION_IDLE_MS - eventAgeMs(event)).coerceAtLeast(0L))
@@ -436,6 +450,10 @@ class PetOverlayService : Service() {
         else -> "idle"
     }
     private fun renderEvent(event: JSONObject) {
+        if (aggregateMood() == "idle" && pendingApprovals.isEmpty()) {
+            renderIdleCompanion()
+            return
+        }
         val prefs = getSharedPreferences("relay", MODE_PRIVATE)
         val mood = moodFor(event)
         sprite?.setMood(aggregateMood())
@@ -469,6 +487,13 @@ class PetOverlayService : Service() {
         bubble?.text = if (lines.isEmpty()) bubbleLine(event, mood, message) else SpannableStringBuilder().apply {
             lines.forEachIndexed { index, line -> if (index > 0) append("\n"); append(line) }
         }
+    }
+
+    private fun renderIdleCompanion() {
+        if (pendingApprovals.isNotEmpty() || aggregateMood() != "idle") return
+        val companion = MobilePetGame.state(this)
+        sprite?.setMood(companion.idleMood)
+        bubble?.text = "${companion.personality.title} · ${companion.activity}"
     }
 
     private fun bubbleLine(event: JSONObject, mood: String, message: String): CharSequence {
